@@ -1,0 +1,46 @@
+.cgenh-else-row {
+	font-size: 0.85rem;
+}
+
+.cgenh-else-badge {
+	font-size: 0.7rem;
+	font-weight: 600;
+	letter-spacing: 0.05em;
+	padding: 0.2rem 0.5rem;
+}
+
+.cgenh-else-link {
+	border-color: hsla(var(--cgenh-hue-warning), 85%, 55%, 0.6);
+	background: linear-gradient(135deg, hsla(var(--cgenh-hue-warning), 85%, 55%, 0.18) 0%, hsla(var(--cgenh-hue-warning), 85%, 55%, 0.08) 100%);
+	color: hsla(var(--cgenh-hue-warning), 75%, 85%, 0.95);
+	box-shadow: inset 0 1px 0 var(--cgenh-glass-tint);
+	transition: border-color var(--cgenh-motion-fast) var(--cgenh-motion-ease),
+		background var(--cgenh-motion-fast) var(--cgenh-motion-ease),
+		color var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-else-link:hover {
+	border-color: hsla(var(--cgenh-hue-warning), 85%, 60%, 0.85);
+	background: linear-gradient(135deg, hsla(var(--cgenh-hue-warning), 85%, 55%, 0.28) 0%, hsla(var(--cgenh-hue-warning), 85%, 55%, 0.14) 100%);
+	color: hsla(var(--cgenh-hue-warning), 75%, 92%, 0.98);
+}
+
+/* Light mode overrides */
+:root[data-bs-theme='light'] .cgenh-else-link {
+	border-color: hsla(var(--cgenh-hue-warning), 80%, 42%, 0.65);
+	background: linear-gradient(135deg, hsla(var(--cgenh-hue-warning), 80%, 50%, 0.15) 0%, hsla(var(--cgenh-hue-warning), 80%, 50%, 0.06) 100%);
+	color: hsla(var(--cgenh-hue-warning), 70%, 28%, 0.95);
+}
+
+:root[data-bs-theme='light'] .cgenh-else-link:hover {
+	border-color: hsla(var(--cgenh-hue-warning), 80%, 45%, 0.85);
+	background: linear-gradient(135deg, hsla(var(--cgenh-hue-warning), 80%, 50%, 0.25) 0%, hsla(var(--cgenh-hue-warning), 80%, 50%, 0.12) 100%);
+	color: hsla(var(--cgenh-hue-warning), 70%, 22%, 0.98);
+}
+
+.cgenh-else-link:focus-visible {
+	outline: none;
+	box-shadow:
+		0 0 0 2px hsla(var(--cgenh-hue-warning), 85%, 55%, 0.35),
+		inset 0 1px 0 var(--cgenh-glass-tint);
+}

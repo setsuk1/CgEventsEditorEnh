@@ -1,0 +1,8 @@
+.cgenh-virtual-list {
+	padding-top: var(--cgenh-virtual-top, 0px);
+	padding-bottom: var(--cgenh-virtual-bottom, 0px);
+}
+
+.cgenh-virtual-list__item--pinned {
+	display: none;
+}

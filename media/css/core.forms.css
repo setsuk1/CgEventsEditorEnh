@@ -1,0 +1,50 @@
+.form-control,
+.form-select {
+	background-color: var(--vscode-input-background, var(--bs-body-bg));
+	color: var(--vscode-input-foreground, var(--bs-body-color));
+	border-color: var(--vscode-input-border, var(--bs-border-color));
+}
+
+.form-control:focus,
+.form-select:focus {
+	border-color: var(--vscode-focusBorder, var(--bs-primary));
+	box-shadow: 0 0 0 0.2rem rgba(0, 122, 204, 0.25);
+}
+
+.form-check-input {
+	background-color: var(--vscode-input-background, var(--bs-body-bg));
+	border-color: var(--vscode-input-border, var(--bs-border-color));
+}
+
+.form-check-input:checked {
+	background-color: var(--vscode-button-background, var(--bs-primary));
+	border-color: var(--vscode-button-background, var(--bs-primary));
+}
+
+.cgenh-app-shell .form-check {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-left: 0;
+	min-height: 0;
+}
+
+.cgenh-app-shell .form-check .form-check-input {
+	float: none;
+	margin: 0;
+}
+
+.cgenh-app-shell .form-check .form-check-label {
+	margin: 0;
+}
+
+.cgenh-rjsf-form .checkbox label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+}
+
+.cgenh-rjsf-form .checkbox input {
+	margin: 0;
+}

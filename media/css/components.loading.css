@@ -1,0 +1,148 @@
+.cgenh-loading-screen {
+	position: relative;
+	width: 100vw;
+	height: 100vh;
+	overflow: hidden;
+}
+
+.cgenh-loading-screen--overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 2000;
+}
+
+.cgenh-loading-image {
+	position: absolute;
+	inset: 0;
+	background-image: url('../img/tongrenbeijing.jpg');
+	background-size: cover;
+	background-position: center;
+	filter: hue-rotate(180deg);
+}
+
+.cgenh-loading-image__mask {
+	position: absolute;
+	inset: 0;
+	background: rgba(255, 255, 255, 0.4);
+}
+
+.cgenh-loading-content {
+	position: relative;
+	z-index: 1;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.6rem;
+	padding: 1rem;
+	text-align: center;
+}
+
+.cgenh-loading-spinner {
+	position: relative;
+	width: 64px;
+	height: 64px;
+}
+
+.cgenh-loading-dot {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: 0;
+	height: 0;
+	transform: rotate(var(--cgenh-loading-rot)) translate(0, -24px);
+}
+
+.cgenh-loading-dot::before {
+	content: '';
+	display: block;
+	width: 8px;
+	height: 8px;
+	margin: -4px;
+	border-radius: 999px;
+	background: rgba(248, 250, 255, 0.95);
+	box-shadow: 0 0 6px rgba(0, 0, 0, 0.35);
+	animation: cgenh-loading-pulse 1.2s infinite ease-in-out;
+	animation-delay: var(--cgenh-loading-delay);
+}
+
+.cgenh-loading-dot:nth-child(1) {
+	--cgenh-loading-rot: 0deg;
+	--cgenh-loading-delay: 0s;
+}
+
+.cgenh-loading-dot:nth-child(2) {
+	--cgenh-loading-rot: 30deg;
+	--cgenh-loading-delay: -0.1s;
+}
+
+.cgenh-loading-dot:nth-child(3) {
+	--cgenh-loading-rot: 60deg;
+	--cgenh-loading-delay: -0.2s;
+}
+
+.cgenh-loading-dot:nth-child(4) {
+	--cgenh-loading-rot: 90deg;
+	--cgenh-loading-delay: -0.3s;
+}
+
+.cgenh-loading-dot:nth-child(5) {
+	--cgenh-loading-rot: 120deg;
+	--cgenh-loading-delay: -0.4s;
+}
+
+.cgenh-loading-dot:nth-child(6) {
+	--cgenh-loading-rot: 150deg;
+	--cgenh-loading-delay: -0.5s;
+}
+
+.cgenh-loading-dot:nth-child(7) {
+	--cgenh-loading-rot: 180deg;
+	--cgenh-loading-delay: -0.6s;
+}
+
+.cgenh-loading-dot:nth-child(8) {
+	--cgenh-loading-rot: 210deg;
+	--cgenh-loading-delay: -0.7s;
+}
+
+.cgenh-loading-dot:nth-child(9) {
+	--cgenh-loading-rot: 240deg;
+	--cgenh-loading-delay: -0.8s;
+}
+
+.cgenh-loading-dot:nth-child(10) {
+	--cgenh-loading-rot: 270deg;
+	--cgenh-loading-delay: -0.9s;
+}
+
+.cgenh-loading-dot:nth-child(11) {
+	--cgenh-loading-rot: 300deg;
+	--cgenh-loading-delay: -1s;
+}
+
+.cgenh-loading-dot:nth-child(12) {
+	--cgenh-loading-rot: 330deg;
+	--cgenh-loading-delay: -1.1s;
+}
+
+.cgenh-loading-text {
+	font-size: 0.9rem;
+	letter-spacing: 0.04em;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes cgenh-loading-pulse {
+
+	0%,
+	100% {
+		transform: scale(0.35);
+		opacity: 0.35;
+	}
+
+	50% {
+		transform: scale(1);
+		opacity: 1;
+	}
+}

@@ -1,0 +1,208 @@
+{
+	"definition": {
+		"Event": {
+			"project": "CgEventsEditorEnh",
+			"source": {
+				"path": "CG.CgEventsEditorEnh",
+				"filename": "Event.definition.ts"
+			},
+			"tostring": {},
+			"className": "EventDef",
+			"timestamp": 1766692351090,
+			"label": {},
+			"description": {},
+			"allpaths": {},
+			"properties": [
+				{
+					"key": "id",
+					"type": "string",
+					"label": {
+						"en": "Event ID",
+						"zh": "事件ID"
+					},
+					"description": {
+						"en": "This is a unique Id among all events. If same id found at event creation, random string will be appended.",
+						"zh": "這是代表事件的唯一ID，如果在建立事件時發現有重覆ID存在時，系統會自動在設定的ID後加上隨機字串。"
+					},
+					"line": 5
+				},
+				{
+					"key": "disabled",
+					"type": "boolean",
+					"label": {
+						"en": "Disable",
+						"zh": "停用"
+					},
+					"description": {
+						"en": "If disabled, the event will not be triggered.",
+						"zh": "若停用，則該事件不會自動觸發。"
+					},
+					"line": 3
+				},
+				{
+					"key": "folder",
+					"type": "string",
+					"label": {
+						"en": "Folder",
+						"zh": "事件匣"
+					},
+					"description": {
+						"en": "Organize events into folders, help events accessible.",
+						"zh": "使用事件匣分類事件，以增加尋找事件的效率。"
+					},
+					"line": 3
+				},
+				{
+					"key": "startTime",
+					"type": "number",
+					"label": {
+						"en": "Start Time",
+						"zh": "起始時間"
+					},
+					"unit": {
+						"en": "millisecond(s)",
+						"zh": "毫秒"
+					},
+					"description": {
+						"en": "Time to enable the triggers in this event.",
+						"zh": "事件啟動的時間，在啟動前不會被觸發。"
+					},
+					"line": 3,
+					"params": {
+						"minimum": 0
+					}
+				},
+				{
+					"key": "checkInterval",
+					"type": "number",
+					"label": {
+						"en": "Check Interval",
+						"zh": "檢查間隔"
+					},
+					"unit": {
+						"en": "millisecond(s)",
+						"zh": "毫秒"
+					},
+					"default": {
+						"en": "10"
+					},
+					"description": {
+						"en": "Time interval to perform the checks when there is no trigger for this event.",
+						"zh": "當事件中沒有觸發或運作中的觸發時，事件進行周期檢查的間隔時間。"
+					},
+					"line": 3,
+					"params": {
+						"minimum": 1
+					}
+				},
+				{
+					"key": "repeats",
+					"type": "number",
+					"label": {
+						"en": "Repeats",
+						"zh": "重覆次數"
+					},
+					"description": {
+						"en": "Set the number of repeats after the event triggered. Set to -1 to repeat infinitly. Set to 0 to execute once only.",
+						"zh": "設定事件觸發後重新啟動的次數。若設定為-1 重覆次數為無限次，若設定為0 則執行一次後不重覆。"
+					},
+					"line": 3,
+					"params": {
+						"minimum": -1
+					},
+					"suggest": [
+						0,
+						1,
+						2,
+						3,
+						-1
+					],
+					"suggestFilter": "none",
+					"suggestTitles": {
+						"en": [
+							"No Repeat",
+							"times",
+							"times",
+							"times",
+							"Repeat Infinitely"
+						],
+						"zh": [
+							"不重覆",
+							"次",
+							"次",
+							"次",
+							"無限重覆"
+						]
+					}
+				},
+				{
+					"key": "repeatInterval",
+					"type": "number",
+					"label": {
+						"en": "Repeat Interval",
+						"zh": "重覆間隔"
+					},
+					"unit": {
+						"en": "millisecond(s)",
+						"zh": "毫秒"
+					},
+					"description": {
+						"en": "Set the duration to re-enable the event after it is triggered.",
+						"zh": "設定事件觸發後重新啟動前的時間間隔。"
+					},
+					"line": 3,
+					"params": {
+						"minimum": 0
+					}
+				},
+				{
+					"key": "devOnly",
+					"type": "boolean",
+					"label": {
+						"en": "Dev Only",
+						"zh": "開發時專用"
+					},
+					"description": {
+						"en": "If checked, this event will only be available in dev mode, and will not exist in the final product.",
+						"zh": "若勾選，則此事件只會在開發時啟用，不會出現在遊戲最後的成品中。"
+					},
+					"line": 3
+				},
+				{
+					"key": "referenceOnly",
+					"type": "number",
+					"label": {
+						"en": ""
+					},
+					"line": 3,
+					"enum": [
+						0,
+						1
+					],
+					"enumTitles": {
+						"en": [
+							"This event will be auto-triggered when all checks pass",
+							"This event will *NOT* be auto-triggered"
+						],
+						"zh": [
+							"這個事件會在以下檢查通過後自動觸發並執行動作",
+							"這個事件*不會*自動觸發"
+						]
+					}
+				},
+				{
+					"key": "color",
+					"type": "string",
+					"format": "color",
+					"label": {
+						"en": "Color",
+						"zh": "顏色"
+					},
+					"line": 3
+				}
+			],
+			"format": "grid",
+			"use": "config"
+		}
+	}
+}

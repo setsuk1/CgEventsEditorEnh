@@ -1,0 +1,25 @@
+{
+    "compilerOptions": {
+        "baseUrl": "..",
+        "paths": {
+            "@media/*": [
+                "media/*"
+            ]
+        },
+        "module": "esnext",
+        "target": "ES2022",
+        "lib": [
+            "ES2022"
+        ],
+        "sourceMap": true,
+        "strict": true,
+        "esModuleInterop": true,
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+        "strictNullChecks": false
+    },
+    "include": [
+        "./**/*.ts",
+        "./**/*.tsx"
+    ]
+}

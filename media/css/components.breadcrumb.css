@@ -1,0 +1,71 @@
+.breadcrumb-item-custom {
+	display: inline-flex;
+	align-items: center;
+	position: relative;
+	border-radius: 4px;
+	box-shadow: 0 0 0 1px transparent;
+	transition: box-shadow 0.15s ease;
+}
+
+.breadcrumb-item-custom:hover {
+	box-shadow: 0 0 0 1px var(--vscode-toolbar-hoverBackground, var(--cgenh-surface-2));
+}
+
+.breadcrumb-item-custom.current:hover,
+.breadcrumb-item-custom.dropdown.show:hover,
+.breadcrumb-item-custom.dropdown.show {
+	box-shadow: 0 0 0 1px transparent;
+}
+
+.breadcrumb-segment {
+	display: inline-flex;
+	padding: 0.25rem 0.35rem;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 0.15s;
+}
+
+.breadcrumb-segment:hover {
+	background-color: var(--vscode-toolbar-hoverBackground, var(--cgenh-surface-2));
+}
+
+.breadcrumb-segment.current {
+	cursor: default;
+}
+
+.breadcrumb-separator {
+	padding: 0.25rem 0.35rem;
+	border-radius: 4px;
+	cursor: pointer;
+	user-select: none;
+	color: var(--bs-secondary-color);
+	transition: background-color 0.15s;
+}
+
+.breadcrumb-separator:hover,
+.breadcrumb-item-custom.dropdown.show .breadcrumb-separator {
+	background-color: var(--vscode-toolbar-hoverBackground, var(--cgenh-surface-2));
+}
+
+.breadcrumb-dropdown-menu {
+	top: 100%;
+	left: 0;
+	max-height: min(200px, max-content);
+	overflow-y: auto;
+	z-index: 1000;
+}
+
+.cgenh-breadcrumb-bar {
+	min-width: 0;
+	padding: 0.15rem 0.25rem;
+	gap: 2px;
+	cursor: default;
+	flex-wrap: nowrap;
+	white-space: nowrap;
+	overflow: visible;
+}
+
+.cgenh-breadcrumb-search {
+	width: 200px;
+	flex-shrink: 0;
+}

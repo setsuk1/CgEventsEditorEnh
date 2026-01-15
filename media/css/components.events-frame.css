@@ -1,0 +1,75 @@
+.cgenh-events-frame {
+	--cgenh-events-frame-padding: 0.55rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0;
+	border-radius: 0.7rem;
+	background: linear-gradient(180deg, var(--cgenh-frame-bg-start) 0%, var(--cgenh-frame-bg-end) 100%);
+	border: 1px solid var(--cgenh-border-default);
+	box-shadow: inset 0 1px 0 var(--cgenh-glass-tint), 0 4px 14px var(--cgenh-shadow-ambient);
+	flex: 1 0 auto;
+	overflow: visible;
+	width: 100%;
+	align-self: stretch;
+}
+
+.cgenh-events-frame__body {
+	padding: 0 var(--cgenh-events-frame-padding) var(--cgenh-events-frame-padding);
+}
+
+.cgenh-events-toolbar--framed {
+	position: sticky;
+	top: var(--nav-offset, 0px);
+	z-index: 100;
+	transform: translateY(var(--cgenh-toolbar-shift, 0px));
+	will-change: transform;
+	transition: transform var(--cgenh-toolbar-shift-duration, var(--cgenh-motion-medium)) var(--cgenh-motion-ease);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+	row-gap: 0.35rem;
+	padding: calc(var(--cgenh-events-frame-padding) + 0.2rem) calc(var(--cgenh-events-frame-padding) + 0.35rem) 0.35rem;
+	border-radius: 0.7rem 0.7rem 0 0;
+	background: var(--cgenh-frame-bg-start);
+	border: 0;
+	box-shadow: inset 0 -1px 0 var(--cgenh-toolbar-divider);
+	border-bottom: 1px solid var(--cgenh-border-default);
+}
+
+.cgenh-events-toolbar__left {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.cgenh-events-toolbar__right {
+	margin-left: auto;
+	min-width: 0;
+}
+
+.cgenh-events-toolbar--framed .btn {
+	border-radius: 0.45rem;
+	border: 1px solid var(--cgenh-border-subtle);
+	background: var(--cgenh-toolbar-btn-bg);
+	color: var(--cgenh-text-primary);
+	transition: background-color var(--cgenh-motion-fast) var(--cgenh-motion-ease), border-color var(--cgenh-motion-fast) var(--cgenh-motion-ease), box-shadow var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+	box-shadow: none;
+}
+
+.cgenh-events-toolbar--framed .btn:hover {
+	background: var(--cgenh-toolbar-btn-hover);
+	border-color: var(--cgenh-border-default);
+	color: var(--cgenh-text-primary);
+	box-shadow: none;
+}
+
+.cgenh-events-toolbar--framed .btn:active {
+	background: var(--cgenh-toolbar-btn-active);
+	border-color: var(--cgenh-border-emphasis);
+	box-shadow: none;
+}

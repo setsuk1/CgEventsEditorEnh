@@ -1,0 +1,7 @@
+:root {
+	--cgenh-motion-fast: 200ms;
+	--cgenh-motion-medium: 450ms;
+	--cgenh-motion-disable: 360ms;
+	--cgenh-motion-toggle: 360ms;
+	--cgenh-motion-ease: cubic-bezier(0.2, 0, 0, 1);
+}

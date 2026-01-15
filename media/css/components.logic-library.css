@@ -1,0 +1,43 @@
+.logic-library-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 0.5rem;
+	align-content: flex-start;
+	min-width: 0;
+}
+
+.logic-library-cell {
+	min-width: 0;
+}
+
+.logic-library-item {
+	min-width: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+	display: inline-flex;
+	justify-content: flex-start;
+	align-items: center;
+}
+
+.logic-library-item .logic-library-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	display: inline-block;
+}
+
+.logic-library-empty {
+	grid-column: 1 / -1;
+}
+
+.cgenh-logic-card--disabled {
+	opacity: 0.5;
+	border-style: dashed !important;
+}
+
+.cgenh-logic-items-gap {
+	gap: 0;
+}

@@ -1,0 +1,204 @@
+:root {
+	--cgenh-divider-color: var(--cgenh-border-default);
+}
+
+.cgenh-card-actions {
+	padding-left: 0;
+}
+
+.cgenh-card-actions .btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.35rem;
+	padding: 0.25rem 0.45rem;
+	transition: box-shadow var(--cgenh-motion-fast) var(--cgenh-motion-ease), transform var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-card-actions .btn:not(:disabled):hover {
+	box-shadow: 0 0 0 0.15rem var(--cgenh-accent-soft);
+}
+
+.cgenh-card-actions .btn:not(:disabled):active {
+	transform: translateY(1px);
+}
+
+.cgenh-card-actions .cgenh-card-actions.btn-group {
+	border-left: 0;
+	padding-left: 0;
+}
+
+.cgenh-card-actions.btn-group>.btn {
+	border: 0;
+	border-left: 1px solid var(--cgenh-divider-color);
+	border-radius: 0 !important;
+	background: transparent;
+}
+
+.cgenh-card-actions.btn-group {
+	padding-left: 0;
+}
+
+.cgenh-card-actions.btn-group>.btn:first-child,
+.cgenh-card-actions.btn-group>.cgenh-loop-indicator+.btn {
+	border-left: 0;
+}
+
+.cgenh-action-btn {
+	--cgenh-action-color: var(--bs-body-color);
+	--cgenh-action-hover-bg: var(--cgenh-surface-2);
+	--cgenh-action-active-bg: var(--cgenh-surface-3);
+	color: var(--cgenh-action-color);
+	transition: color var(--cgenh-motion-fast) var(--cgenh-motion-ease), background-color var(--cgenh-motion-fast) var(--cgenh-motion-ease), opacity var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-action-btn:hover {
+	background: var(--cgenh-action-hover-bg);
+	color: var(--cgenh-action-color);
+}
+
+.cgenh-action-btn:active {
+	background: var(--cgenh-action-active-bg);
+	color: var(--cgenh-action-color);
+}
+
+.cgenh-action-btn--toggle {
+	--cgenh-action-color: hsla(var(--cgenh-hue-success), 65%, 50%, 0.92);
+	--cgenh-action-hover-bg: hsla(var(--cgenh-hue-success), 60%, 45%, 0.12);
+	--cgenh-action-active-bg: hsla(var(--cgenh-hue-success), 60%, 45%, 0.18);
+}
+
+.cgenh-action-btn--toggle[aria-pressed='true'] {
+	--cgenh-action-color: hsla(var(--cgenh-hue-warning), 75%, 55%, 0.92);
+	--cgenh-action-hover-bg: hsla(var(--cgenh-hue-warning), 70%, 50%, 0.14);
+	--cgenh-action-active-bg: hsla(var(--cgenh-hue-warning), 70%, 50%, 0.2);
+	opacity: 0.9;
+}
+
+.cgenh-action-btn--edit {
+	--cgenh-action-color: hsla(var(--cgenh-hue-primary), 65%, 55%, 0.92);
+	--cgenh-action-hover-bg: hsla(var(--cgenh-hue-primary), 60%, 50%, 0.12);
+	--cgenh-action-active-bg: hsla(var(--cgenh-hue-primary), 60%, 50%, 0.18);
+}
+
+.cgenh-action-btn--danger {
+	--cgenh-action-color: hsla(var(--cgenh-hue-danger), 70%, 60%, 0.92);
+	--cgenh-action-hover-bg: hsla(var(--cgenh-hue-danger), 65%, 55%, 0.12);
+	--cgenh-action-active-bg: hsla(var(--cgenh-hue-danger), 65%, 55%, 0.18);
+}
+
+.cgenh-action-btn--move {
+	--cgenh-action-color: hsla(var(--cgenh-hue-accent), 75%, 52%, 0.92);
+	--cgenh-action-hover-bg: hsla(var(--cgenh-hue-accent), 70%, 48%, 0.12);
+	--cgenh-action-active-bg: hsla(var(--cgenh-hue-accent), 70%, 48%, 0.18);
+}
+
+.cgenh-action-btn--more {
+	--cgenh-action-color: hsla(270, 70%, 65%, 0.92);
+	--cgenh-action-hover-bg: hsla(270, 65%, 60%, 0.12);
+	--cgenh-action-active-bg: hsla(270, 65%, 60%, 0.18);
+}
+
+.cgenh-card-actions .cgenh-action-btn--more {
+	padding-right: 0.25rem;
+}
+
+.cgenh-action-btn--toggle .cgenh-action-icon-stack {
+	position: relative;
+	width: 16px;
+	height: 16px;
+	display: inline-block;
+}
+
+.cgenh-action-btn--toggle .cgenh-action-icon {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: opacity var(--cgenh-motion-toggle) var(--cgenh-motion-ease), transform var(--cgenh-motion-toggle) var(--cgenh-motion-ease);
+}
+
+.cgenh-action-btn--toggle .cgenh-action-icon--active {
+	opacity: 1;
+	transform: scale(1);
+}
+
+.cgenh-action-btn--toggle .cgenh-action-icon--disabled {
+	opacity: 0;
+	transform: scale(0.9);
+}
+
+.cgenh-action-btn--toggle[aria-pressed='true'] .cgenh-action-icon--active {
+	opacity: 0;
+	transform: scale(0.9);
+}
+
+.cgenh-action-btn--toggle[aria-pressed='true'] .cgenh-action-icon--disabled {
+	opacity: 1;
+	transform: scale(1);
+}
+
+.cgenh-disabled-badge {
+	animation: cgenh-fade-in var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-loop-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+	padding: 0 0.35rem 0 0.2rem;
+	margin-right: 0.1rem;
+	flex: 0 0 auto;
+	color: hsla(var(--cgenh-hue-warning), 75%, 55%, 0.95);
+	font-weight: 700;
+}
+
+.cgenh-loop-indicator__icon {
+	width: 14px;
+	height: 14px;
+	display: block;
+}
+
+.cgenh-loop-indicator__sigma {
+	font-size: 0.85rem;
+	line-height: 1;
+}
+
+[data-cgenh-compact-level='1'] .cgenh-action-btn--danger,
+[data-cgenh-compact-level='2'] .cgenh-action-btn--danger,
+[data-cgenh-compact-level='3'] .cgenh-action-btn--danger,
+[data-cgenh-compact-level='4'] .cgenh-action-btn--danger,
+[data-cgenh-compact-level='5'] .cgenh-action-btn--danger {
+	display: none;
+}
+
+[data-cgenh-compact-level='2'] .cgenh-action-btn--toggle,
+[data-cgenh-compact-level='3'] .cgenh-action-btn--toggle,
+[data-cgenh-compact-level='4'] .cgenh-action-btn--toggle,
+[data-cgenh-compact-level='5'] .cgenh-action-btn--toggle {
+	display: none;
+}
+
+[data-cgenh-compact-level='3'] .cgenh-action-btn--edit,
+[data-cgenh-compact-level='4'] .cgenh-action-btn--edit,
+[data-cgenh-compact-level='5'] .cgenh-action-btn--edit {
+	display: none;
+}
+
+[data-cgenh-compact-level='4'] .cgenh-action-btn--move,
+[data-cgenh-compact-level='5'] .cgenh-action-btn--move {
+	display: none;
+}
+
+@keyframes cgenh-fade-in {
+	from {
+		opacity: 0;
+		transform: translateY(-2px);
+	}
+
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}

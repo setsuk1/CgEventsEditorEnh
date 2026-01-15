@@ -1,0 +1,41 @@
+.cgenh-helper-field__layout {
+	display: flex;
+	gap: 0.5rem;
+	align-items: flex-start;
+	width: 100%;
+}
+
+.cgenh-helper-field__preview {
+	flex: 1;
+	min-width: 0;
+}
+
+.cgenh-helper-field__preview--tight {
+	flex: 0 1 auto;
+}
+
+.cgenh-helper-field__actions {
+	flex-shrink: 0;
+}
+
+.cgenh-helper-field__viewer {
+	overflow: hidden;
+	box-sizing: border-box;
+	max-width: 100%;
+}
+
+.cgenh-helper-field--fullwidth {
+	width: 100%;
+}
+
+.cgenh-helper-viewer__container {
+	width: 100%;
+	height: 100%;
+}
+
+.cgenh-helper-viewer {
+	width: 100%;
+	height: 100%;
+	border: 0;
+	display: block;
+}

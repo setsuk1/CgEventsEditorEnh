@@ -1,0 +1,219 @@
+{
+	"definition": {
+		"EventsSettings": {
+			"project": "CgEventsEditorEnh",
+			"source": {
+				"path": "CG.CgEventsEditorEnh",
+				"filename": "EventsSettings.definition.ts"
+			},
+			"tostring": {},
+			"className": "EventsSettingsDef",
+			"timestamp": 1766873832566,
+			"label": {
+				"en": "Config",
+				"zh": "設定"
+			},
+			"description": {},
+			"allpaths": {},
+			"properties": [
+				{
+					"key": "stage",
+					"type": "object",
+					"format": "grid",
+					"label": {
+						"en": "Stage",
+						"zh": "舞台"
+					},
+					"line": 5
+				},
+				{
+					"key": "width",
+					"type": "number",
+					"label": {
+						"en": "Width",
+						"zh": "寬"
+					},
+					"unit": {
+						"en": "px"
+					},
+					"line": 1,
+					"gridColumns": 6,
+					"parent": "stage",
+					"params": {
+						"minimum": 1,
+						"maximum": 5000
+					}
+				},
+				{
+					"key": "height",
+					"type": "number",
+					"label": {
+						"en": "Height",
+						"zh": "高"
+					},
+					"unit": {
+						"en": "px"
+					},
+					"line": 3,
+					"gridColumns": 6,
+					"parent": "stage",
+					"params": {
+						"minimum": 2,
+						"maximum": 5000
+					}
+				},
+				{
+					"key": "resolutionPolicy",
+					"type": "string",
+					"label": {
+						"en": "Resolution Policy",
+						"zh": "解析度策略"
+					},
+					"line": 3,
+					"parent": "stage",
+					"enum": [
+						"showAll",
+						"exactFit",
+						"noBorder",
+						"fixedWidth",
+						"fixedHeight",
+						"origin"
+					],
+					"enumTitles": {
+						"en": [
+							"Show All",
+							"Exact Fit",
+							"No Border",
+							"Fixed Width",
+							"Fixed Height",
+							"Origin"
+						],
+						"zh": [
+							"縮放至舞台大小(長寬比不變)",
+							"縮放至視窗大小(變動長寬比)",
+							"填滿舞台大小(長寬比不變)",
+							"縮放至舞台寬度(長寬比不變)",
+							"縮放至舞台高度(長寬比不變)",
+							"保持原尺寸"
+						]
+					}
+				},
+				{
+					"key": "alignHorizontal",
+					"type": "string",
+					"label": {
+						"en": "Horizontal Alignment",
+						"zh": "水平對齊"
+					},
+					"line": 3,
+					"gridColumns": 6,
+					"parent": "stage",
+					"enum": [
+						"left",
+						"center",
+						"right"
+					],
+					"enumTitles": {
+						"en": [
+							"Left",
+							"Center",
+							"Right"
+						],
+						"zh": [
+							"置左",
+							"置中",
+							"置右"
+						]
+					}
+				},
+				{
+					"key": "alignVertical",
+					"type": "string",
+					"label": {
+						"en": "Vertical Alignment",
+						"zh": "垂直對齊"
+					},
+					"line": 3,
+					"gridColumns": 6,
+					"parent": "stage",
+					"enum": [
+						"top",
+						"middle",
+						"bottom"
+					],
+					"enumTitles": {
+						"en": [
+							"Top",
+							"Middle",
+							"Bottom"
+						],
+						"zh": [
+							"置頂",
+							"置中",
+							"置底"
+						]
+					}
+				},
+				{
+					"key": "backgroundColor",
+					"type": "string",
+					"format": "color",
+					"label": {
+						"en": "Background Color",
+						"zh": "背景顏色"
+					},
+					"line": 3,
+					"parent": "stage"
+				},
+				{
+					"key": "preload",
+					"type": "object",
+					"label": {
+						"en": "Preload",
+						"zh": "預先載入"
+					},
+					"line": 3
+				},
+				{
+					"key": "sources",
+					"type": "array",
+					"format": "checkbox",
+					"label": {
+						"en": "Sources",
+						"zh": "原始碼"
+					},
+					"description": {
+						"en": "If any .events file is selected to preload, the events in the files will be merged into this .events when game is running.",
+						"zh": "若勾選任何 .events 檔預載, 該檔案中設定的事件列表在遊戲時會合併至這個事件檔。"
+					},
+					"line": 1,
+					"arrayItem": "string",
+					"parent": "preload",
+					"uniqueItems": 1,
+					"params": {
+						"groupBy": "extension"
+					}
+				},
+				{
+					"key": "resourcesExclude",
+					"type": "array",
+					"format": "checkbox",
+					"label": {
+						"en": "Resourecs",
+						"zh": "資源"
+					},
+					"line": 3,
+					"arrayItem": "string",
+					"parent": "preload",
+					"uniqueItems": 1,
+					"params": {
+						"groupBy": "prefix",
+						"invertSelection": true
+					}
+				}
+			],
+			"format": "grid",
+			"use": "config"
+		}
+	}
+}

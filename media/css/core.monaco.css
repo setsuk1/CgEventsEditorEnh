@@ -1,0 +1,11 @@
+.cgenh-monaco-wrapper--fill {
+	min-height: 0;
+}
+
+.cgenh-monaco-wrapper--compact {
+	height: 400px;
+}
+
+.cgenh-monaco-wrapper--default {
+	height: 70vh;
+}

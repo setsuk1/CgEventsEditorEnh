@@ -1,0 +1,79 @@
+.cgenh-toolbar-icon-btn {
+	width: 2rem;
+	padding-left: 0;
+	padding-right: 0;
+	font-weight: 700;
+	line-height: 1;
+	height: 32px;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.cgenh-events-toolbar .btn {
+	min-height: 32px;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.cgenh-folder-filter-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
+	max-width: min(420px, 100%);
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.cgenh-events-toolbar .btn.btn-outline-secondary,
+.cgenh-folder-filter-button {
+	background: linear-gradient(145deg, var(--cgenh-toolbar-btn-hover) 0%, var(--cgenh-toolbar-btn-bg) 50%, var(--cgenh-toolbar-btn-active) 100%);
+	border-color: var(--cgenh-border-emphasis);
+	color: var(--cgenh-text-primary);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.08),
+		0 2px 4px var(--cgenh-shadow-ambient);
+	transition: all var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-events-toolbar .btn.btn-outline-secondary:hover,
+.cgenh-folder-filter-button:hover {
+	background: linear-gradient(145deg, hsla(var(--cgenh-hue-primary), 42%, 35%, 0.85) 0%, var(--cgenh-toolbar-btn-hover) 50%, var(--cgenh-toolbar-btn-bg) 100%);
+	border-color: var(--cgenh-border-hover);
+	color: var(--cgenh-text-primary);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.12),
+		0 4px 8px var(--cgenh-shadow-drop),
+		0 1px 3px var(--cgenh-shadow-glow);
+}
+
+.cgenh-events-toolbar .btn.btn-outline-secondary:active,
+.cgenh-folder-filter-button:active {
+	background: linear-gradient(145deg, var(--cgenh-toolbar-btn-active) 0%, hsla(var(--cgenh-hue-primary), 38%, 12%, 0.92) 100%);
+	border-color: var(--cgenh-border-emphasis);
+	box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+	transform: translateY(1px);
+}
+
+.cgenh-folder-filter-button {
+	border-radius: var(--bs-border-radius-pill, 50rem);
+}
+
+.cgenh-folder-filter-button__text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.cgenh-folder-filter-button__icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: hsla(var(--cgenh-hue-warning), 70%, 58%, 1);
+}
+
+.cgenh-folder-filter-button__icon svg path {
+	fill: currentColor;
+	stroke: currentColor;
+}

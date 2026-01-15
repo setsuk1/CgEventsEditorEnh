@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"baseUrl": "..",
+		"paths": {
+			"@shared": [
+				"shared/index.ts"
+			],
+			"@media/*": [
+				"media/*"
+			]
+		},
+		"module": "nodenext",
+		"target": "ES2022",
+		"lib": [
+			"ES2022"
+		],
+		"sourceMap": true,
+		"strict": true
+	},
+	"include": [
+		"./**/*.ts",
+		"@shared"
+	]
+}

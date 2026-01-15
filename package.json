@@ -1,0 +1,192 @@
+{
+  "name": "cgeventseditorenh",
+  "displayName": "CgEventsEditorEnh",
+  "description": "Code Gamelet Events file editor for VS Code",
+  "publisher": "cgenhproject",
+  "icon": "icon.png",
+  "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/setsuk1/CgEventsEditorEnh.git"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "gamelet",
+    "events",
+    "beater"
+  ],
+  "activationEvents": [
+    "workspaceContains:*.events"
+  ],
+  "main": "./dist/src/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "cgeventseditorenh.eventsEditor",
+        "displayName": "Code Gamelet Events Editor (Enh)",
+        "selector": [
+          {
+            "filenamePattern": "*.events"
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "CgEventsEditorEnh",
+      "properties": {
+        "cgeventseditorenh.language": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "en-US",
+            "zh-Hant",
+            "zh-Hans",
+            "ja",
+            "ko"
+          ],
+          "enumDescriptions": [
+            "Follow VS Code",
+            "English",
+            "繁體中文",
+            "简体中文",
+            "日本語",
+            "한국어"
+          ],
+          "description": "UI language for the CgEventsEditorEnh webview."
+        },
+        "cgeventseditorenh.syncLanguage": {
+          "type": "string",
+          "default": "ask",
+          "enum": [
+            "auto",
+            "ask",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Automatically sync language setting",
+            "Ask before syncing language setting",
+            "Never sync language setting"
+          ],
+          "description": "How to handle language synchronization between webview and VS Code settings."
+        },
+        "cgeventseditorenh.sortingPresets": {
+          "type": "object",
+          "default": {},
+          "description": "Saved sorting presets for the event editor. Key is preset name, value is array of sorting rules.",
+          "additionalProperties": {
+            "type": "array",
+            "description": "Sorting rules for this preset",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order": {
+                  "type": "string",
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "enum": [
+                    "id",
+                    "disabled",
+                    "folder",
+                    "startTime",
+                    "checkInterval",
+                    "repeats",
+                    "repeatInterval",
+                    "devOnly",
+                    "referenceOnly",
+                    "color",
+                    "actions",
+                    "checks",
+                    "triggers",
+                    "index"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "cgeventseditorenh.openEventsAsJson",
+        "title": "Open Events File as JSON (Enh)",
+        "category": "Code Gamelet"
+      },
+      {
+        "command": "cgeventseditorenh.createEventsWithTemplate",
+        "title": "Create Events File With Template (Enh)",
+        "category": "Code Gamelet"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "when": "resourceExtname == .events",
+          "command": "cgeventseditorenh.openEventsAsJson",
+          "group": "navigation@5"
+        }
+      ],
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .events",
+          "command": "cgeventseditorenh.openEventsAsJson",
+          "group": "navigation@5"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "build": "vsce package --out dist/"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.106.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.27.0",
+    "eslint": "^9.39.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@rjsf/core": "^6.1.2",
+    "@rjsf/validator-ajv8": "^6.1.2",
+    "ajv-i18n": "^4.2.0",
+    "bootstrap": "^5.3.8",
+    "lz-string": "^1.5.0",
+    "mathjs": "^13.0.0",
+    "monaco-editor": "^0.55.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

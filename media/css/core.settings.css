@@ -1,0 +1,193 @@
+.cgenh-base-settings__field-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.cgenh-base-settings__toggle-btn {
+	padding: 2px 8px;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.cgenh-base-settings__toggle-btn-wide {
+	padding: 2px 10px;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+.cgenh-base-settings__checkbox-list--compact {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	line-height: 1.1;
+}
+
+.cgenh-base-settings__group {
+	padding: 4px 0 4px 8px;
+}
+
+.cgenh-base-settings__group-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-left: 6px;
+}
+
+.cgenh-base-settings__group-title {
+	font-weight: 600;
+}
+
+.cgenh-base-settings__checkbox--compact {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 0 1px 16px;
+	font-size: 0.92rem;
+}
+
+.cgenh-base-settings__checkbox-input {
+	width: 14px;
+	height: 14px;
+	min-width: 14px;
+}
+
+.cgenh-base-settings-summary__group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+
+.cgenh-base-settings-summary__group-title {
+	font-weight: 700;
+	color: var(--cgenh-text-primary);
+	cursor: default;
+}
+
+.cgenh-base-settings-summary__list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	padding: 0.1rem 0.25rem 0.1rem 2.75rem;
+}
+
+.cgenh-base-settings-summary__config {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	justify-content: space-between;
+	min-height: 36px;
+	border: 1px solid var(--cgenh-border-default);
+	border-radius: 0.55rem;
+	background: var(--cgenh-chip-bg);
+	padding: 0.3rem 0.5rem;
+	color: var(--cgenh-text-primary);
+	text-align: left;
+	cursor: pointer;
+	-webkit-user-select: none;
+	user-select: none;
+	transition:
+		background-color var(--cgenh-motion-fast) var(--cgenh-motion-ease),
+		border-color var(--cgenh-motion-fast) var(--cgenh-motion-ease);
+}
+
+.cgenh-base-settings-summary__config:hover {
+	background: var(--cgenh-surface-2);
+	border-color: var(--cgenh-border-hover);
+}
+
+.cgenh-base-settings-summary__config-label {
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.cgenh-base-settings-summary__config-json {
+	flex: 1;
+	min-width: 0;
+	text-align: right;
+	font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+	font-size: 0.9rem;
+	color: var(--cgenh-text-secondary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.cgenh-base-settings-summary__empty {
+	padding-left: 2.75rem;
+}
+
+/* Checkbox Widget for RJSF */
+.cgenh-checkbox {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.cgenh-checkbox__header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.cgenh-checkbox__header--no-label {
+	justify-content: flex-start;
+}
+
+.cgenh-checkbox__header-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.cgenh-checkbox__header-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.cgenh-checkbox__groups {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	line-height: 1.1;
+}
+
+.cgenh-checkbox__group {
+	padding: 4px 0 4px 8px;
+}
+
+.cgenh-checkbox__group-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-left: 6px;
+}
+
+.cgenh-checkbox__group-title {
+	font-weight: 600;
+}
+
+.cgenh-checkbox__items {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.cgenh-checkbox__items--grouped {
+	padding-left: 16px;
+}
+
+.cgenh-checkbox__item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 0;
+	font-size: 0.92rem;
+	cursor: default;
+}
+
+.cgenh-checkbox__label {
+	cursor: pointer;
+}

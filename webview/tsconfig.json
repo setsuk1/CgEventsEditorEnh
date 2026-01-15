@@ -1,0 +1,31 @@
+{
+    "compilerOptions": {
+        "baseUrl": "..",
+        "paths": {
+            "@shared": [
+                "shared/index.ts"
+            ],
+            "@media/*": [
+                "media/*"
+            ]
+        },
+        "module": "esnext",
+        "target": "ES2022",
+        "lib": [
+            "DOM",
+            "ES2022"
+        ],
+        "sourceMap": true,
+        "strict": true,
+        "jsx": "react-jsx",
+        "esModuleInterop": true,
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+        "strictNullChecks": false
+    },
+    "include": [
+        "./**/*.ts",
+        "./**/*.tsx",
+        "@shared"
+    ]
+}

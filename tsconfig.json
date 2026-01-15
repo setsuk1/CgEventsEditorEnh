@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "baseUrl": "."
+    },
+    "files": [],
+    "references": [
+        {
+            "path": "./src"
+        },
+        {
+            "path": "./webview"
+        },
+        {
+            "path": "./shared"
+        }
+    ]
+}

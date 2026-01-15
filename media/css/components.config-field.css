@@ -1,0 +1,67 @@
+.cgenh-config-field--fullwidth {
+	width: 100%;
+}
+
+.cgenh-config-field {
+	--cgenh-field-indent: 0px;
+	--cgenh-field-padding-left-base: 0px;
+	padding-left: calc(var(--cgenh-field-padding-left-base) + var(--cgenh-field-indent));
+}
+
+.row>.cgenh-config-field {
+	--cgenh-field-padding-left-base: calc(var(--bs-gutter-x, 0px) * 0.5);
+}
+
+.cgenh-config-field__helper-stack {
+	position: relative;
+	z-index: 10;
+}
+
+.cgenh-definition-card__body--visible {
+	overflow: visible;
+}
+
+.cgenh-config-field__add-row {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.cgenh-config-field__list-item {
+	flex: 1;
+	min-width: 0;
+}
+
+.cgenh-config-field__checkbox-input {
+	margin: 0;
+	cursor: pointer;
+}
+
+.cgenh-config-field__label-container[role='button'] {
+	cursor: pointer;
+}
+
+.cgenh-config-field__label--inline {
+	margin: 0;
+}
+
+.cgenh-config-field--indent-1 {
+	--cgenh-field-indent: 20px;
+}
+
+.cgenh-config-field--indent-2 {
+	--cgenh-field-indent: 40px;
+}
+
+.cgenh-config-field--indent-3 {
+	--cgenh-field-indent: 60px;
+}
+
+.cgenh-config-field--indent-4 {
+	--cgenh-field-indent: 80px;
+}
+
+.cgenh-config-field--indent-5 {
+	--cgenh-field-indent: 100px;
+}

@@ -1,0 +1,144 @@
+{
+    "definition": {
+        "EventSortingRuleSet": {
+            "project": "CgEventsEditorEnh",
+            "source": {
+                "path": "CG.CgEventsEditorEnh",
+                "filename": "EventSortingRuleSet.definition.ts"
+            },
+            "tostring": {},
+            "className": "EventSortingRuleSetDef",
+            "timestamp": 1766690465544,
+            "label": {
+                "en": "Event Sorting Rule Set",
+                "zh": "事件排序規則集"
+            },
+            "description": {},
+            "allpaths": {},
+            "properties": [
+                {
+                    "key": "rules",
+                    "type": "array",
+                    "label": {
+                        "en": ""
+                    },
+                    "description": {
+                        "en": "All events will be sorted according to the rules.",
+                        "zh": "所有事件將依照規則順序進行排序。"
+                    },
+                    "line": 5,
+                    "arrayItem": "#EventSortingRule",
+                    "gridOptions": [
+                        "noHeader"
+                    ]
+                }
+            ],
+            "format": "grid",
+            "gridOptions": [
+                "noHeader"
+            ],
+            "use": "config"
+        },
+        "EventSortingRule": {
+            "project": "CgEventsEditorEnh",
+            "source": {
+                "path": "CG.CgEventsEditorEnh",
+                "filename": "EventSortingRule.definition.ts"
+            },
+            "tostring": {},
+            "className": "EventSortingRuleDef",
+            "timestamp": 1766690465544,
+            "label": {
+                "en": "Event Sorting Rule",
+                "zh": "事件排序規則"
+            },
+            "description": {},
+            "allpaths": {},
+            "properties": [
+                {
+                    "key": "order",
+                    "type": "string",
+                    "label": {
+                        "en": ""
+                    },
+                    "line": 5,
+                    "gridColumns": 4,
+                    "enum": [
+                        "asc",
+                        "desc"
+                    ],
+                    "enumTitles": {
+                        "en": [
+                            "Ascending order",
+                            "Decending order"
+                        ],
+                        "zh": [
+                            "正序排列",
+                            "倒序排列"
+                        ]
+                    }
+                },
+                {
+                    "key": "target",
+                    "type": "string",
+                    "label": {
+                        "en": ""
+                    },
+                    "line": 3,
+                    "gridColumns": 8,
+                    "enum": [
+                        "id",
+                        "disabled",
+                        "folder",
+                        "startTime",
+                        "checkInterval",
+                        "repeats",
+                        "repeatInterval",
+                        "devOnly",
+                        "referenceOnly",
+                        "color",
+                        "actions",
+                        "checks",
+                        "triggers",
+                        "index"
+                    ],
+                    "enumTitles": {
+                        "en": [
+                            "Event ID",
+                            "Disable",
+                            "Folder",
+                            "Start Time",
+                            "Check Interval",
+                            "Repeats",
+                            "Repeat Interval",
+                            "Dev Only",
+                            "Reference Only",
+                            "Color",
+                            "Actions Number",
+                            "Checks Number",
+                            "Triggers Number",
+                            "Event Index"
+                        ],
+                        "zh": [
+                            "事件ID",
+                            "停用",
+                            "事件匣",
+                            "起始時間",
+                            "檢查間隔",
+                            "重覆次數",
+                            "重覆間隔",
+                            "開發時專用",
+                            "參考事件",
+                            "顏色",
+                            "動作數量",
+                            "檢查數量",
+                            "觸發數量",
+                            "事件索引"
+                        ]
+                    }
+                }
+            ],
+            "format": "grid"
+        }
+    }
+}

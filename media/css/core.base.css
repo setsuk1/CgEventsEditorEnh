@@ -1,0 +1,166 @@
+:root {
+	color-scheme: light dark;
+
+	--bs-body-font-family: var(--vscode-font-family, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+	--bs-body-font-size: var(--vscode-font-size, 14px);
+
+	--bs-body-bg: var(--vscode-editor-background, #1e1e1e);
+	--bs-body-color: var(--vscode-editor-foreground, #d4d4d4);
+	--bs-secondary-color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.65));
+	--bs-border-color: var(--vscode-panel-border, rgba(255, 255, 255, 0.15));
+
+	--bs-primary: var(--vscode-button-background, #0e639c);
+	--bs-link-color: var(--vscode-textLink-foreground, #3794ff);
+	--bs-link-hover-color: var(--vscode-textLink-activeForeground, #4da3ff);
+
+	/* Harmonized color palette - Base hues (Analogous scheme) */
+	--cgenh-hue-primary: 220;
+	--cgenh-hue-accent: 180;
+	--cgenh-hue-highlight: 260;
+	--cgenh-hue-success: 145;
+	--cgenh-hue-warning: 42;
+	--cgenh-hue-danger: 0;
+
+	/* Semantic accent colors */
+	--cgenh-accent-soft: hsla(var(--cgenh-hue-primary), 50%, 65%, 0.12);
+	--cgenh-accent-muted: hsla(var(--cgenh-hue-primary), 45%, 58%, 0.22);
+	--cgenh-accent-glow: hsla(var(--cgenh-hue-accent), 60%, 55%, 0.28);
+	--cgenh-accent-highlight: hsla(var(--cgenh-hue-highlight), 45%, 62%, 0.25);
+
+	/* Text hierarchy */
+	--cgenh-text-primary: rgba(240, 245, 255, 0.94);
+	--cgenh-text-secondary: rgba(195, 210, 235, 0.75);
+	--cgenh-text-muted: rgba(160, 180, 210, 0.55);
+
+	/* Border hierarchy */
+	--cgenh-border-subtle: rgba(120, 155, 200, 0.10);
+	--cgenh-border-default: rgba(120, 155, 200, 0.16);
+	--cgenh-border-emphasis: rgba(130, 165, 210, 0.24);
+	--cgenh-border-hover: rgba(145, 180, 225, 0.32);
+
+	/* Event card accent colors */
+	--cgenh-event-border: hsla(var(--cgenh-hue-accent), 50%, 60%, 0.35);
+	--cgenh-event-border-hover: hsla(var(--cgenh-hue-accent), 55%, 70%, 0.55);
+	--cgenh-event-glow: hsla(var(--cgenh-hue-accent), 55%, 55%, 0.15);
+
+	/* Gradient presets */
+	--cgenh-gradient-primary: linear-gradient(135deg, hsla(var(--cgenh-hue-primary), 45%, 25%, 0.85) 0%, hsla(var(--cgenh-hue-primary), 50%, 18%, 0.9) 100%);
+	--cgenh-gradient-accent: linear-gradient(135deg, hsla(var(--cgenh-hue-accent), 40%, 28%, 0.75) 0%, hsla(var(--cgenh-hue-primary), 42%, 22%, 0.8) 100%);
+	--cgenh-gradient-highlight: linear-gradient(135deg, hsla(var(--cgenh-hue-highlight), 35%, 32%, 0.65) 0%, hsla(var(--cgenh-hue-primary), 40%, 24%, 0.75) 100%);
+	--cgenh-gradient-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%);
+	--cgenh-gradient-glass: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.04) 100%);
+
+	/* Frame background */
+	--cgenh-frame-bg-start: hsla(var(--cgenh-hue-primary), 38%, 14%, 0.9);
+	--cgenh-frame-bg-end: hsla(var(--cgenh-hue-primary), 42%, 8%, 0.94);
+
+	/* Toolbar colors */
+	--cgenh-toolbar-divider: rgba(130, 170, 220, 0.18);
+	--cgenh-toolbar-btn-bg: hsla(var(--cgenh-hue-primary), 35%, 20%, 0.7);
+	--cgenh-toolbar-btn-hover: hsla(var(--cgenh-hue-primary), 38%, 30%, 0.8);
+	--cgenh-toolbar-btn-active: hsla(var(--cgenh-hue-primary), 38%, 15%, 0.88);
+	--cgenh-toolbar-gradient: linear-gradient(180deg, var(--cgenh-toolbar-btn-bg) 0%, var(--cgenh-toolbar-btn-active) 100%);
+
+	/* Chip/Badge colors */
+	--cgenh-chip-bg: hsla(var(--cgenh-hue-primary), 35%, 15%, 0.5);
+	--cgenh-chip-border: rgba(130, 165, 210, 0.16);
+	--cgenh-chip-text: rgba(215, 228, 248, 0.88);
+	--cgenh-chip-icon: rgba(155, 185, 225, 0.7);
+	--cgenh-chip-gradient: linear-gradient(135deg, hsla(var(--cgenh-hue-primary), 32%, 22%, 0.55) 0%, hsla(var(--cgenh-hue-primary), 35%, 16%, 0.6) 100%);
+
+	/* Shadow system */
+	--cgenh-shadow-ambient: rgba(0, 0, 0, 0.32);
+	--cgenh-shadow-drop: rgba(0, 0, 0, 0.42);
+	--cgenh-shadow-glow: hsla(var(--cgenh-hue-accent), 50%, 50%, 0.15);
+	--cgenh-glass-tint: rgba(255, 255, 255, 0.045);
+	--cgenh-glass-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, transparent 50%);
+}
+
+:root[data-bs-theme='dark'] {
+	--cgenh-surface-1: rgba(255, 255, 255, 0.045);
+	--cgenh-surface-2: rgba(255, 255, 255, 0.085);
+	--cgenh-surface-3: rgba(255, 255, 255, 0.13);
+}
+
+:root[data-bs-theme='light'] {
+	--cgenh-surface-1: rgba(0, 0, 0, 0.04);
+	--cgenh-surface-2: rgba(0, 0, 0, 0.075);
+	--cgenh-surface-3: rgba(0, 0, 0, 0.12);
+
+	/* Light theme overrides */
+	--cgenh-text-primary: rgba(20, 30, 50, 0.95);
+	--cgenh-text-secondary: rgba(40, 55, 80, 0.78);
+	--cgenh-text-muted: rgba(70, 90, 120, 0.58);
+
+	/* Semantic accent colors - light mode */
+	--cgenh-accent-soft: hsla(var(--cgenh-hue-primary), 55%, 50%, 0.10);
+	--cgenh-accent-muted: hsla(var(--cgenh-hue-primary), 50%, 45%, 0.18);
+	--cgenh-accent-glow: hsla(var(--cgenh-hue-accent), 55%, 42%, 0.22);
+	--cgenh-accent-highlight: hsla(var(--cgenh-hue-highlight), 50%, 50%, 0.20);
+
+	/* Border hierarchy - light mode */
+	--cgenh-border-subtle: rgba(60, 80, 120, 0.12);
+	--cgenh-border-default: rgba(60, 80, 120, 0.20);
+	--cgenh-border-emphasis: rgba(50, 70, 110, 0.28);
+	--cgenh-border-hover: rgba(40, 60, 100, 0.38);
+
+	/* Event card accent colors - light mode */
+	--cgenh-event-border: hsla(var(--cgenh-hue-accent), 55%, 45%, 0.45);
+	--cgenh-event-border-hover: hsla(var(--cgenh-hue-accent), 60%, 40%, 0.65);
+	--cgenh-event-glow: hsla(var(--cgenh-hue-accent), 50%, 45%, 0.12);
+
+	/* Gradient presets - light mode */
+	--cgenh-gradient-primary: linear-gradient(135deg, hsla(var(--cgenh-hue-primary), 50%, 92%, 0.9) 0%, hsla(var(--cgenh-hue-primary), 45%, 96%, 0.95) 100%);
+	--cgenh-gradient-accent: linear-gradient(135deg, hsla(var(--cgenh-hue-accent), 45%, 92%, 0.85) 0%, hsla(var(--cgenh-hue-primary), 40%, 95%, 0.9) 100%);
+	--cgenh-gradient-highlight: linear-gradient(135deg, hsla(var(--cgenh-hue-highlight), 40%, 94%, 0.75) 0%, hsla(var(--cgenh-hue-primary), 35%, 97%, 0.85) 100%);
+	--cgenh-gradient-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.4) 100%);
+	--cgenh-gradient-glass: linear-gradient(135deg, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0.6) 50%, rgba(255, 255, 255, 0.75) 100%);
+
+	/* Frame background - light mode */
+	--cgenh-frame-bg-start: hsla(var(--cgenh-hue-primary), 35%, 96%, 0.95);
+	--cgenh-frame-bg-end: hsla(var(--cgenh-hue-primary), 30%, 98%, 0.98);
+
+	/* Toolbar colors - light mode */
+	--cgenh-toolbar-divider: rgba(60, 90, 140, 0.18);
+	--cgenh-toolbar-btn-bg: hsla(var(--cgenh-hue-primary), 30%, 96%, 0.85);
+	--cgenh-toolbar-btn-hover: hsla(var(--cgenh-hue-primary), 35%, 92%, 0.9);
+	--cgenh-toolbar-btn-active: hsla(var(--cgenh-hue-primary), 32%, 88%, 0.92);
+	--cgenh-toolbar-gradient: linear-gradient(180deg, var(--cgenh-toolbar-btn-bg) 0%, var(--cgenh-toolbar-btn-active) 100%);
+
+	/* Chip/Badge colors - light mode */
+	--cgenh-chip-bg: hsla(var(--cgenh-hue-primary), 30%, 94%, 0.7);
+	--cgenh-chip-border: rgba(60, 90, 140, 0.20);
+	--cgenh-chip-text: rgba(30, 45, 70, 0.92);
+	--cgenh-chip-icon: rgba(50, 75, 120, 0.75);
+	--cgenh-chip-gradient: linear-gradient(135deg, hsla(var(--cgenh-hue-primary), 28%, 95%, 0.75) 0%, hsla(var(--cgenh-hue-primary), 32%, 92%, 0.8) 100%);
+
+	/* Shadow system - light mode */
+	--cgenh-shadow-ambient: rgba(0, 0, 0, 0.08);
+	--cgenh-shadow-drop: rgba(0, 0, 0, 0.15);
+	--cgenh-shadow-glow: hsla(var(--cgenh-hue-accent), 45%, 45%, 0.12);
+	--cgenh-glass-tint: rgba(0, 0, 0, 0.02);
+	--cgenh-glass-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.5) 50%);
+}
+
+body {
+	background: var(--bs-body-bg);
+	color: var(--bs-body-color);
+	font-family: var(--bs-body-font-family);
+	font-size: var(--bs-body-font-size);
+	padding: 0;
+}
+
+.modal-content,
+.card,
+.dropdown-menu {
+	background-color: var(--bs-body-bg);
+	color: var(--bs-body-color);
+}
+
+body.cgenh-has-modal-open {
+	overflow: hidden !important;
+}
+
+.cgenh-app-main {
+	min-height: 0;
+}
