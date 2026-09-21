@@ -7,18 +7,65 @@ interface EnterCommitOptions {
 }
 
 function isEventInContainer(event: Event, container: HTMLElement | null): boolean {
-	if (!container) {
-		return false;
-	}
 	const target = event.target;
-	if (target instanceof Node && !container.contains(target)) {
-		const modals = document.querySelectorAll('.modal.show');
-		const topModal = modals.length > 0 ? modals[modals.length - 1] : null;
-		if (!topModal || !topModal.contains(container)) {
-			return false;
-		}
-	}
-	return true;
+	return !!container && target instanceof Node && container.contains(target);
+}
+
+export interface FormShortcutContext {
+	key: string;
+	isComposing: boolean;
+	defaultPrevented: boolean;
+	ctrlKey: boolean;
+	metaKey: boolean;
+	altKey: boolean;
+	shiftKey: boolean;
+	inContainer: boolean;
+	inMonaco: boolean;
+	isInput: boolean;
+	isContentEditable: boolean;
+}
+
+export type FormUndoRedoAction = 'undo' | 'redo';
+
+export function resolveFormUndoRedoShortcut(
+	context: FormShortcutContext,
+	options?: UndoRedoOptions,
+): FormUndoRedoAction | undefined {
+	if (!context.inContainer || context.isComposing || context.defaultPrevented) return undefined;
+	if (!(context.ctrlKey || context.metaKey) || context.altKey) return undefined;
+	if (!options?.allowInMonaco && context.inMonaco) return undefined;
+
+	const key = context.key.toLowerCase();
+	if (key === 'z' && !context.shiftKey) return 'undo';
+	if ((key === 'y' && !context.shiftKey) || (key === 'z' && context.shiftKey)) return 'redo';
+	return undefined;
+}
+
+export function shouldHandleFormEnterCommit(
+	context: FormShortcutContext,
+	options?: EnterCommitOptions,
+): boolean {
+	if (!context.inContainer || context.key !== 'Enter' || context.isComposing || context.defaultPrevented) return false;
+	if (context.ctrlKey || context.metaKey || context.altKey) return false;
+	if (!options?.allowInMonaco && context.inMonaco) return false;
+	return context.isInput && !context.isContentEditable;
+}
+
+function createFormShortcutContext(event: KeyboardEvent, container: HTMLElement | null): FormShortcutContext {
+	const target = event.target;
+	return {
+		key: event.key,
+		isComposing: event.isComposing,
+		defaultPrevented: event.defaultPrevented,
+		ctrlKey: event.ctrlKey,
+		metaKey: event.metaKey,
+		altKey: event.altKey,
+		shiftKey: event.shiftKey,
+		inContainer: isEventInContainer(event, container),
+		inMonaco: target instanceof HTMLElement && Boolean(target.closest('.monaco-editor')),
+		isInput: target instanceof HTMLInputElement,
+		isContentEditable: target instanceof HTMLElement && target.isContentEditable,
+	};
 }
 
 export function handleUndoRedoShortcuts(
@@ -28,30 +75,12 @@ export function handleUndoRedoShortcuts(
 	onRedo: () => void,
 	options?: UndoRedoOptions
 ): boolean {
-	if (!isEventInContainer(event, container)) {
-		return false;
-	}
-	// if (event.defaultPrevented) {
-	// 	return false;
-	// }
-	const hasCtrl = event.ctrlKey || event.metaKey;
-	if (!hasCtrl) {
-		return false;
-	}
-	const key = event.key.toLowerCase();
-	if (key !== 'z' && key !== 'y') {
-		return false;
-	}
-	const target = event.target;
-	if (!options?.allowInMonaco && target instanceof HTMLElement && target.closest('.monaco-editor')) {
-		return false;
-	}
+	const action = resolveFormUndoRedoShortcut(createFormShortcutContext(event, container), options);
+	if (!action) return false;
+
 	event.preventDefault();
-	if (key === 'z') {
-		onUndo();
-	} else {
-		onRedo();
-	}
+	if (action === 'undo') onUndo();
+	else onRedo();
 	return true;
 }
 
@@ -61,38 +90,7 @@ export function handleEnterCommitShortcut(
 	onCommit: () => void,
 	options?: EnterCommitOptions
 ): boolean {
-	if (!isEventInContainer(event, container)) {
-		return false;
-	}
-	if (event.key !== 'Enter') {
-		return false;
-	}
-	if (event.isComposing) {
-		return false;
-	}
-	if (event.ctrlKey || event.metaKey || event.altKey) {
-		return false;
-	}
-	const target = event.target;
-	if (container && target instanceof Node && !container.contains(target)) {
-		return false;
-	}
-	if (!options?.allowInMonaco && target instanceof HTMLElement && target.closest('.monaco-editor')) {
-		return false;
-	}
-	if (target instanceof HTMLTextAreaElement) {
-		return false;
-	}
-	if (target instanceof HTMLSelectElement) {
-		return false;
-	}
-	if (target instanceof HTMLButtonElement) {
-		return false;
-	}
-	if (!(target instanceof HTMLInputElement)) {
-		return false;
-	}
-	if (target instanceof HTMLElement && target.isContentEditable) {
+	if (!shouldHandleFormEnterCommit(createFormShortcutContext(event, container), options)) {
 		return false;
 	}
 	event.preventDefault();

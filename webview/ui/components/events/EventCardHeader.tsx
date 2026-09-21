@@ -2,8 +2,8 @@ import { ICgEvent } from '@shared';
 import React from 'react';
 import { editor } from '../../../editor/CgEventsEditor';
 import { playMouseDownAudio, playMouseHoverAudio } from '../../../helper/sound';
-import { winEE } from '../../../msg/WindowEventEmitter';
 import { translation } from '../../../trans/Trans';
+import { winEE } from '../../../msg/WindowEventEmitter';
 import { SvgCircleCheck } from '../../svg/SvgCircleCheck';
 import { SvgCircleSlash } from '../../svg/SvgCircleSlash';
 import { SvgCodeBracketsStroke } from '../../svg/SvgCodeBracketsStroke';
@@ -20,22 +20,15 @@ import { SvgPlusStroke } from '../../svg/SvgPlusStroke';
 import { SvgRefresh } from '../../svg/SvgRefresh';
 import { SvgRepeat } from '../../svg/SvgRepeat';
 import { SvgTrashOutline } from '../../svg/SvgTrashOutline';
-import { EVENT_FOLDER_REGEX, EVENT_NAME_REGEX } from '../../utils/validators';
 import { ContextMenuPortal } from './ContextMenuPortal';
+import {
+	ResponsiveCompactObserver,
+	isHorizontallyOverflowing,
+	reconcileCompactLevel,
+} from './ResponsiveLayout';
 import { contextMenuStateManager } from './ContextMenuState';
-import { eventCardHeaderGlobalManager } from './EventCardHeaderGlobalManager';
-
-function pad2(value: number): string {
-	return value < 10 ? `0${value}` : String(value);
-}
-
-function formatClockTimeSeconds(totalSeconds: number): string {
-	const clamped = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
-	const hours = Math.floor(clamped / 3600);
-	const minutes = Math.floor((clamped % 3600) / 60);
-	const seconds = clamped % 60;
-	return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
-}
+import { getEventIdentityValidationMessage, validateEventFolder, validateEventId } from './EventIdentityValidation';
+import { buildEventHeaderSummary } from './EventHeaderSummary';
 
 export interface EventCardHeaderProps {
 	eventId: string;
@@ -63,15 +56,13 @@ interface EventCardHeaderState {
 }
 
 export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, EventCardHeaderState> {
+	private keydownAttached = false;
 	private headerElement: HTMLElement | null = null;
-	private resizeObserver: ResizeObserver | null = null;
-	private compactUpdateFrame: number | null = null;
-	// Dynamic listeners (added/removed based on state)
-	private resizeFallbackAttached = false;
+	private readonly compactObserver = new ResponsiveCompactObserver(() => this.applyCompactLevel());
 
 	constructor(props: EventCardHeaderProps) {
 		super(props);
-		const event = this.getEventSnapshot(props.eventId);
+		const event = props.event;
 		this.state = {
 			editingId: false,
 			editingFolder: false,
@@ -85,28 +76,26 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		};
 	}
 
-	private setup(): void {
-		contextMenuStateManager.on('change', this.handleContextMenuStateChange, this);
-	}
-
-	private dispose(): void {
-		contextMenuStateManager.off('change', this.handleContextMenuStateChange, this);
-	}
-
 	componentDidMount(): void {
-		this.setup();
-		eventCardHeaderGlobalManager.register(this.props.eventId, this);
-		this.observeHeader();
-		this.scheduleCompactUpdate();
+		contextMenuStateManager.on('change', this.handleContextMenuStateChange);
+		this.compactObserver.schedule();
 	}
 
 	componentDidUpdate(prevProps: EventCardHeaderProps, prevState: EventCardHeaderState) {
+		if (!prevState.contextMenuOpen && this.state.contextMenuOpen && !this.keydownAttached) {
+			winEE.on('keydown', this.handleEventHeaderMenuKeyDown);
+			this.keydownAttached = true;
+		}
+		if (prevState.contextMenuOpen && !this.state.contextMenuOpen && this.keydownAttached) {
+			winEE.off('keydown', this.handleEventHeaderMenuKeyDown);
+			this.keydownAttached = false;
+		}
 		const eventIdChanged = prevProps.eventId !== this.props.eventId;
 		const eventChanged = prevProps.event !== this.props.event;
 
 		if (eventIdChanged) {
-			this.closeContextMenu();
-			const nextEvent = this.getEventSnapshot(this.props.eventId);
+			contextMenuStateManager.closeContextMenu(this.getMenuId(prevProps.eventId));
+			const nextEvent = this.props.event;
 			this.setState({
 				editingId: false,
 				editingFolder: false,
@@ -130,53 +119,21 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 			}
 		}
 
-		this.observeHeader();
-		this.scheduleCompactUpdate();
+		this.compactObserver.schedule();
 	}
 
 	componentWillUnmount(): void {
-		this.dispose();
-		eventCardHeaderGlobalManager.clearContextMenuOwner(this.props.eventId);
-		eventCardHeaderGlobalManager.unregister(this.props.eventId, this);
-		if (this.compactUpdateFrame !== null) {
-			cancelAnimationFrame(this.compactUpdateFrame);
-			this.compactUpdateFrame = null;
+		contextMenuStateManager.off('change', this.handleContextMenuStateChange);
+		if (this.keydownAttached) {
+			winEE.off('keydown', this.handleEventHeaderMenuKeyDown);
+			this.keydownAttached = false;
 		}
-		this.resizeObserver?.disconnect();
-		this.resizeObserver = null;
-		if (this.resizeFallbackAttached) {
-			winEE.off('resize', this.handleResizeFallback, this);
-			this.resizeFallbackAttached = false;
-		}
+		this.compactObserver.dispose();
 	}
 
 	private setHeaderRef = (element: HTMLElement | null) => {
 		this.headerElement = element;
-	};
-
-	private observeHeader() {
-		if (!this.headerElement) return;
-		if (typeof ResizeObserver === 'undefined') {
-			if (!this.resizeFallbackAttached) {
-				winEE.on('resize', this.handleResizeFallback, this);
-				this.resizeFallbackAttached = true;
-			}
-			return;
-		}
-		if (!this.resizeObserver) {
-			this.resizeObserver = new ResizeObserver(() => this.scheduleCompactUpdate());
-			this.resizeObserver.observe(this.headerElement);
-		}
-	}
-
-	private handleResizeFallback = () => this.scheduleCompactUpdate();
-
-	private scheduleCompactUpdate = () => {
-		if (this.compactUpdateFrame !== null) return;
-		this.compactUpdateFrame = requestAnimationFrame(() => {
-			this.compactUpdateFrame = null;
-			this.applyCompactLevel();
-		});
+		this.compactObserver.observe(element);
 	};
 
 	private applyCompactLevel() {
@@ -184,7 +141,6 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		if (!header) return;
 
 		const maxLevel = 4;
-		const isOverflowing = () => header.scrollWidth > header.clientWidth + 1;
 		const idElement = header.querySelector('.cgenh-event-card__id');
 		const idInput = header.querySelector('.cgenh-event-card__id-input');
 		const folderBadge = header.querySelector('.cgenh-event-card__folder-badge');
@@ -198,40 +154,22 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		const idTarget = resolveElement(idElement, idInput);
 		const folderTarget = resolveElement(folderBadge, folderInput);
 		const chipsTarget = chips instanceof HTMLElement ? chips : null;
-		const isTruncated = (element: HTMLElement | null) => element ? element.scrollWidth > element.clientWidth + 1 : false;
 		const needsCompaction = () =>
-			isOverflowing() ||
-			isTruncated(idTarget) ||
-			isTruncated(folderTarget) ||
-			isTruncated(chipsTarget);
+			isHorizontallyOverflowing(header) ||
+			isHorizontallyOverflowing(idTarget) ||
+			isHorizontallyOverflowing(folderTarget) ||
+			isHorizontallyOverflowing(chipsTarget);
 		const setLevel = (level: number) => {
 			if (level <= 0) header.removeAttribute('data-cgenh-compact-level');
 			else header.setAttribute('data-cgenh-compact-level', String(level));
 		};
 
-		const rawLevel = header.getAttribute('data-cgenh-compact-level');
-		const parsedLevel = rawLevel ? Number(rawLevel) : 0;
-		let level = Number.isFinite(parsedLevel) ? parsedLevel : 0;
-		level = Math.min(maxLevel, Math.max(0, Math.floor(level)));
-
-		setLevel(level);
-		if (needsCompaction()) {
-			while (level < maxLevel && needsCompaction()) {
-				level += 1;
-				setLevel(level);
-			}
-			return;
-		}
-
-		while (level > 0) {
-			const nextLevel = level - 1;
-			setLevel(nextLevel);
-			if (needsCompaction()) {
-				setLevel(level);
-				break;
-			}
-			level = nextLevel;
-		}
+		reconcileCompactLevel(
+			header.getAttribute('data-cgenh-compact-level'),
+			maxLevel,
+			setLevel,
+			needsCompaction,
+		);
 	}
 
 	private openContextMenu = (e: React.MouseEvent) => {
@@ -240,7 +178,6 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		// If already open and the click is inside the menu, do nothing (don't close or reopen)
 		const menuId = this.getMenuId();
 		contextMenuStateManager.openContextMenu(menuId);
-		eventCardHeaderGlobalManager.setContextMenuOwner(this.props.eventId);
 		this.setState({
 			contextMenuOpen: true,
 			contextMenuX: e.clientX,
@@ -249,7 +186,6 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 	};
 
 	private closeContextMenu = () => {
-		eventCardHeaderGlobalManager.clearContextMenuOwner(this.props.eventId);
 		if (!this.state.contextMenuOpen) return;
 		contextMenuStateManager.closeContextMenu(this.getMenuId());
 		this.setState({ contextMenuOpen: false });
@@ -264,8 +200,8 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		this.openContextMenu(e);
 	};
 
-	private getMenuId() {
-		return `event-${this.props.eventId}`;
+	private getMenuId(eventId = this.props.eventId) {
+		return `event-${eventId}`;
 	}
 
 	private handleContextMenuStateChange = () => {
@@ -277,9 +213,10 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 		}
 	};
 
-	public handleEventHeaderMenuKeyDown = (event: KeyboardEvent) => {
-		if (!this.state.contextMenuOpen) return;
+	private handleEventHeaderMenuKeyDown = (event: KeyboardEvent) => {
+		if (!this.state.contextMenuOpen || event.isComposing) return;
 		if (event.repeat) return;
+		if (event.key !== 'Escape' && (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)) return;
 		if (event.key === 'Escape') {
 			event.preventDefault();
 			event.stopPropagation();
@@ -299,90 +236,62 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 	};
 
 
-	private getEventSnapshot(eventId: string): ICgEvent {
-		const event = this.props.event || editor.getEventById(eventId);
-		if (event) {
-			return event;
-		}
-		return {
-			id: eventId,
-			folder: '',
-			disabled: false,
-			startTime: 0,
-			checkInterval: 10,
-			repeatInterval: 0,
-			repeats: 0,
-			devOnly: false,
-			referenceOnly: false,
-			color: '#ffffff',
-			actions: [],
-			checks: [],
-			triggers: [],
-		};
-	}
-
 	private startEditId = () => {
-		const event = this.getEventSnapshot(this.props.eventId);
+		const event = this.props.event;
 		this.setState({ editingId: true, idValue: event.id, idError: undefined });
 	};
 
 	private startEditFolder = () => {
-		const event = this.getEventSnapshot(this.props.eventId);
+		const event = this.props.event;
 		this.setState({ editingFolder: true, folderValue: event.folder ?? '', folderError: undefined });
 	};
 
 	private commitId = () => {
-		const nextId = this.state.idValue.trim();
-		if (!nextId) {
-			this.setState({ idError: translation.events.eventNameRequired.getTrans() });
+		const currentEvent = this.props.event;
+		const validation = validateEventId(
+			this.state.idValue,
+			currentEvent.id,
+			(eventId) => Boolean(editor.getEventById(eventId)),
+		);
+		if (validation.error) {
+			this.setState({ idError: getEventIdentityValidationMessage(validation.error) });
 			return;
 		}
-		if (!EVENT_NAME_REGEX.test(nextId)) {
-			this.setState({ idError: translation.events.eventNameInvalid.getTrans() });
-			return;
-		}
-		const currentEvent = this.getEventSnapshot(this.props.eventId);
-		const events = editor.getEvents();
-		const exists = events.some((evt) => evt.id === nextId && evt.id !== currentEvent.id);
-		if (exists) {
-			this.setState({ idError: translation.events.eventNameExists.getTrans() });
-			return;
-		}
-		if (nextId !== currentEvent.id) {
-			editor.updateEvent(currentEvent.id, { id: nextId });
+		if (validation.value !== currentEvent.id) {
+			editor.updateEvent(currentEvent.id, { id: validation.value });
 		}
 		this.setState({ editingId: false, idError: undefined });
 	};
 
 	private cancelIdEdit = () => {
-		const event = this.getEventSnapshot(this.props.eventId);
+		const event = this.props.event;
 		this.setState({ editingId: false, idValue: event.id, idError: undefined });
 	};
 
 	private commitFolder = () => {
-		const nextFolder = this.state.folderValue.trim();
-		if (!EVENT_FOLDER_REGEX.test(nextFolder)) {
-			this.setState({ folderError: translation.events.folderNameInvalid.getTrans() });
+		const validation = validateEventFolder(this.state.folderValue);
+		if (validation.error) {
+			this.setState({ folderError: getEventIdentityValidationMessage(validation.error) });
 			return;
 		}
-		editor.updateEvent(this.props.eventId, { folder: nextFolder });
-		this.setState({ editingFolder: false, folderError: undefined, folderValue: nextFolder });
+		editor.updateEvent(this.props.eventId, { folder: validation.value });
+		this.setState({ editingFolder: false, folderError: undefined, folderValue: validation.value });
 	};
 
 	private cancelFolderEdit = () => {
-		const event = this.getEventSnapshot(this.props.eventId);
+		const event = this.props.event;
 		this.setState({ editingFolder: false, folderValue: event.folder ?? '', folderError: undefined });
 	};
 
 	private handleEdit = () => {
 		this.props.onEdit();
 		this.closeContextMenu();
-	}
+	};
 
 	private handleDuplicate = () => {
 		editor.duplicateEvent(this.props.eventId);
 		this.closeContextMenu();
-	}
+	};
 
 	private handleToggleDisabled = () => {
 		editor.toggleEventDisabled(this.props.eventId);
@@ -402,7 +311,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 	renderContextMenu() {
 		if (!this.state.contextMenuOpen) return null;
 		const { contextMenuX, contextMenuY } = this.state;
-		const event = this.getEventSnapshot(this.props.eventId);
+		const event = this.props.event;
 
 		return (
 			<ContextMenuPortal
@@ -437,32 +346,20 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 	}
 
 	render() {
-		const { collapsed, triggerCount, checkCount, actionCount, onToggleCollapse, onEdit } = this.props;
-		const event = this.getEventSnapshot(this.props.eventId);
-		const DEFAULTS = {
-			startTime: 0,
-			checkInterval: 10,
-			repeats: 0,
-			repeatInterval: 0,
-			devOnly: false,
-		};
-		const startTime = event.startTime ?? DEFAULTS.startTime;
-		const checkInterval = event.checkInterval ?? DEFAULTS.checkInterval;
-		const repeats = event.repeats ?? DEFAULTS.repeats;
-		const repeatInterval = event.repeatInterval ?? DEFAULTS.repeatInterval;
-		const showStart = startTime !== DEFAULTS.startTime;
-		const showCheck = checkInterval !== DEFAULTS.checkInterval;
-		const showInterval = repeatInterval !== DEFAULTS.repeatInterval;
-		const showDev = event.devOnly === true;
-		const repeatDisplay = repeats === -1 ? '∞' : repeats;
-		const repeatChipOff = repeats === 0;
-		const repeatParts: string[] = repeats === 0 ? [] : [`x ${repeatDisplay}`];
-		if (repeats !== 0 && showInterval) repeatParts.push(`${repeatInterval}ms`);
-		const repeatSummary = repeatParts.join(' / ');
-		const repeatTitle = repeatChipOff ? `${translation.events.chips.repeat.getTrans()}: ${translation.events.status.disabled.getTrans()}` : `${translation.events.chips.repeat.getTrans()}: ${repeatSummary}`;
-		const startSummary = formatClockTimeSeconds(startTime);
-		const checkSummary = `${checkInterval}ms`;
-		const showFolder = true;
+		const { collapsed, triggerCount, checkCount, actionCount, onToggleCollapse } = this.props;
+		const event = this.props.event;
+		const {
+			showStart,
+			showCheck,
+			showDev,
+			repeatChipOff,
+			repeatSummary,
+			startSummary,
+			checkSummary,
+		} = buildEventHeaderSummary(event);
+		const repeatTitle = repeatChipOff
+			? `${translation.events.chips.repeat.getTrans()}: ${translation.events.status.disabled.getTrans()}`
+			: `${translation.events.chips.repeat.getTrans()}: ${repeatSummary}`;
 		const folderText = (this.state.editingFolder ? this.state.folderValue : (event.folder ?? '')).trim();
 		const folderBadgeClassName = [
 			'badge',
@@ -500,6 +397,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 						onChange={(e) => this.setState({ idValue: e.target.value })}
 						onBlur={this.cancelIdEdit}
 						onKeyDown={(e) => {
+							if (e.nativeEvent.isComposing) return;
 							if (e.key === 'Enter') {
 								e.preventDefault();
 								this.commitId();
@@ -519,15 +417,15 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 						{event.id}
 					</span>
 				)}
-				{(showFolder || this.state.editingFolder) && (
-					this.state.editingFolder ? (
-						<input
+				{this.state.editingFolder ? (
+					<input
 							autoFocus
 							className="form-control form-control-sm cgenh-event-card__folder-input"
 							value={this.state.folderValue}
 							onChange={(e) => this.setState({ folderValue: e.target.value })}
 							onBlur={this.cancelFolderEdit}
 							onKeyDown={(e) => {
+								if (e.nativeEvent.isComposing) return;
 								if (e.key === 'Enter') {
 									e.preventDefault();
 									this.commitFolder();
@@ -554,8 +452,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 							</span>
 							<span>{folderText || translation.events.noFolder.getTrans()}</span>
 						</span>
-					)
-				)}
+					)}
 				<span
 					className="badge cgenh-event-card__count-badge"
 					title={`${translation.logic.blocks.trigger.getTrans()}: ${triggerCount}, ${translation.logic.blocks.check.getTrans()}: ${checkCount}, ${translation.logic.blocks.action.getTrans()}: ${actionCount}`}
@@ -626,7 +523,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 					<button
 						type="button"
 						className="btn cgenh-action-btn cgenh-action-btn--edit"
-						onClick={onEdit}
+						onClick={this.handleEdit}
 						title={translation.common.edit.getTrans()}
 						aria-label={translation.common.edit.getTrans()}
 						onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
@@ -635,7 +532,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 					</button>
 					<button
 						type="button"
-						onClick={() => editor.toggleEventDisabled(event.id)}
+						onClick={this.handleToggleDisabled}
 						onDoubleClick={(e) => {
 							e.preventDefault();
 							e.stopPropagation();
@@ -657,7 +554,7 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 					</button>
 					<button
 						type="button"
-						onClick={() => editor.removeEvent(event.id)}
+						onClick={this.handleRemove}
 						title={translation.common.remove.getTrans()}
 						aria-label={translation.common.remove.getTrans()}
 						className="btn cgenh-action-btn cgenh-action-btn--danger"
@@ -671,9 +568,9 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 						title={translation.list.moveUp.getTrans()}
 						aria-label={translation.list.moveUp.getTrans()}
 						className="btn cgenh-action-btn cgenh-action-btn--move"
-					disabled={this.props.isFirst}
-					onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
-				>
+						disabled={this.props.isFirst}
+						onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
+					>
 						<SvgMoveUpTriangle aria-hidden="true" />
 					</button>
 					<button
@@ -682,9 +579,9 @@ export class EventCardHeader extends React.PureComponent<EventCardHeaderProps, E
 						title={translation.list.moveDown.getTrans()}
 						aria-label={translation.list.moveDown.getTrans()}
 						className="btn cgenh-action-btn cgenh-action-btn--move"
-					disabled={this.props.isLast}
-					onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
-				>
+						disabled={this.props.isLast}
+						onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
+					>
 						<SvgMoveDownTriangle aria-hidden="true" />
 					</button>
 					<button

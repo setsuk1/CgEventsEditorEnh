@@ -16,7 +16,8 @@
         "esModuleInterop": true,
         "moduleResolution": "bundler",
         "resolveJsonModule": true,
-        "strictNullChecks": false
+        "strictNullChecks": false,
+        "types": []
     },
     "include": [
         "./**/*.ts",

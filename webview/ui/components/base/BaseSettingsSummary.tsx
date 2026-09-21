@@ -1,5 +1,5 @@
-import { getSelectedLanguage } from '@shared';
 import React from 'react';
+import { getBasePreloadSummaryCounts } from './BaseSettingsData';
 import { playMouseDownAudio, playMouseHoverAudio } from '../../../helper/sound';
 import { translation } from '../../../trans/Trans';
 import { SvgEdit } from '../../svg/SvgEdit';
@@ -14,7 +14,7 @@ interface BaseSettingsSummaryProps {
 	stage: any;
 	preload: any;
 	onOpen(): void;
-	totalResources?: number;
+	resources?: readonly string[];
 	configList?: ConfigSummaryItem[];
 	onOpenConfig?: (key: string) => void;
 	baseLabel?: string;
@@ -65,23 +65,18 @@ export class BaseSettingsSummary extends React.PureComponent<BaseSettingsSummary
 		}
 	}
 
-	private getResourcesInfo(preload: any, totalResources: number) {
-		const excludedCount = Array.isArray(preload?.resourcesExclude) ? preload.resourcesExclude.length : 0;
-		const includedResources = Math.max(0, totalResources - excludedCount);
-		const sourcesCount = Array.isArray(preload?.sources) ? preload.sources.length : 0;
-		return { includedResources, sourcesCount };
-	}
-
-	private buildBaseSummary(stage: any, preload: any, totalResources: number): string {
-		const languageCode = getSelectedLanguage()?.code ?? '';
+	private buildBaseSummary(stage: any, preload: any, resources: readonly string[]): string {
 		const size = `${stage?.width ?? '-'}x${stage?.height ?? '-'}`;
 		const resolution = this.formatResolution(stage?.resolutionPolicy);
 		const alignment = `${this.formatAlign(stage?.alignHorizontal)}/${this.formatAlign(stage?.alignVertical)}`;
-		const { includedResources, sourcesCount } = this.getResourcesInfo(preload, totalResources);
-		if (languageCode.startsWith('zh')) {
-			return `舞台 ${size}, ${resolution}, ${alignment}, 預先載入 ${includedResources}個資源及 ${sourcesCount}個原始碼`;
-		}
-		return `Stage ${size}, ${resolution}, ${alignment}, preload ${includedResources} resources and ${sourcesCount} sources`;
+		const { includedResources, sourcesCount } = getBasePreloadSummaryCounts(preload, resources);
+		return translation.settings.baseSummary.getTrans({
+			size,
+			resolution,
+			alignment,
+			includedResources,
+			sourcesCount,
+		});
 	}
 
 	private getConfigPreview(value: unknown): string {
@@ -101,13 +96,13 @@ export class BaseSettingsSummary extends React.PureComponent<BaseSettingsSummary
 			stage,
 			preload,
 			onOpen,
-			totalResources = 0,
+			resources = [],
 			configList = [],
 			onOpenConfig,
 			baseLabel,
 		} = this.props;
 		const baseTitle = baseLabel || translation.settings.baseSettingsTitle.getTrans();
-		const summaryLine = this.buildBaseSummary(stage, preload, totalResources);
+		const summaryLine = this.buildBaseSummary(stage, preload, resources);
 		const items: Array<{ key: string; label: string; summary: string; onClick(): void }> = [
 			{
 				key: 'base',

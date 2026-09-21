@@ -1,13 +1,57 @@
 import { UiSchema } from '@rjsf/utils';
-import { modifier } from '../../../editor/modifier';
-import { getValueByPath, isRecord } from './rjsfUtils';
+import { all, create } from 'mathjs/number';
+import { getValueByPath, isRecord, RjsfDataPath } from './rjsfUtils';
+
+const UNSAFE_DATA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+const MATCH_REGEX_LITERAL_RE = /match\(([\s\S]*?),\s*(\/(?:\\.|[^/\\])*\/[a-z]*)\s*\)/g;
+
+const visibleExpressionMath = create(all, {});
+visibleExpressionMath.import({
+	equal(a: string, b: string) {
+		return a === b;
+	},
+	unequal(a: string, b: string) {
+		return a !== b;
+	},
+	includes(a: any, b: string) {
+		let values: string[];
+		if (Array.isArray(a)) {
+			values = a;
+		} else if (a && typeof a === 'object' && typeof a.toArray === 'function') {
+			values = a.toArray();
+		}
+		return values?.includes(b) ?? (a + '').includes(b);
+	},
+	match(a: unknown, b: string) {
+		const text = String(a ?? '');
+		const parsed = b && b.match(/^\/(.*)\/([a-z]*)$/);
+		return parsed ? new RegExp(parsed[1], parsed[2]).test(text) : text.includes(b);
+	},
+}, {
+	override: true,
+});
+
+function isVisibleExpressionTrue(input: string, defaultValue = true): boolean {
+	try {
+		const expression = input.replace(
+			MATCH_REGEX_LITERAL_RE,
+			(_match, valueExpression: string, regexLiteral: string) =>
+				`match(${valueExpression},${JSON.stringify(regexLiteral)})`,
+		);
+		const result = visibleExpressionMath.evaluate(expression);
+		return !(!result || result === 'false' || result === '0');
+	} catch {
+		return defaultValue;
+	}
+}
 
 function toExpressionLiteral(value: unknown): string {
 	if (value === undefined || value === null) {
 		return '';
 	}
 	if (typeof value === 'string') {
-		return value;
+		return JSON.stringify(value);
 	}
 	if (typeof value === 'number' || typeof value === 'boolean') {
 		return String(value);
@@ -22,7 +66,7 @@ function toExpressionLiteral(value: unknown): string {
 export function evaluateVisibleOption(
 	visibleOpt: unknown,
 	rootFormData: unknown,
-	parentPath: string
+	parentPath: RjsfDataPath
 ): boolean {
 	if (typeof visibleOpt === 'boolean') {
 		return visibleOpt;
@@ -37,35 +81,27 @@ export function evaluateVisibleOption(
 
 	const resolved = raw.replace(/\{([^}]+)\}/g, (_match, pathExpr) => {
 		const trimmedPath = String(pathExpr ?? '').trim();
-		if (!trimmedPath) {
-			return '';
-		}
+		if (!trimmedPath) return '';
 
+		const relativePath = trimmedPath.split('.').filter(Boolean);
 		let value: unknown = undefined;
-		if (parentPath) {
-			const siblingPath = `${parentPath}.${trimmedPath}`;
-			value = getValueByPath(rootFormData, siblingPath);
+		if (Array.isArray(parentPath)) {
+			if (parentPath.length) value = getValueByPath(rootFormData, [...parentPath, ...relativePath]);
+		} else if (parentPath) {
+			value = getValueByPath(rootFormData, `${parentPath}.${trimmedPath}`);
 		}
-		if (value === undefined) {
-			value = getValueByPath(rootFormData, trimmedPath);
-		}
+		if (value === undefined) value = getValueByPath(rootFormData, relativePath);
 		return toExpressionLiteral(value);
 	});
 
-	return modifier.isExpressionTrue(resolved, true);
+	return isVisibleExpressionTrue(resolved, true);
 }
 
 function getVisibleOption(uiSchema: UiSchema | undefined): unknown {
-	if (!isRecord(uiSchema)) {
-		return undefined;
-	}
+	if (!isRecord(uiSchema)) return undefined;
 	const rawOptions = uiSchema['ui:options'];
 	const uiOptions = isRecord(rawOptions) ? rawOptions : undefined;
 	return uiOptions ? uiOptions.visible : undefined;
-}
-
-function buildPathString(path: Array<string | number>): string {
-	return path.map((seg) => String(seg)).filter(Boolean).join('.');
 }
 
 function resolveArrayItemUiSchema(rawItems: unknown, index: number): UiSchema | undefined {
@@ -83,48 +119,39 @@ export function pruneHiddenFields(
 	path: Array<string | number> = []
 ): any {
 	if (Array.isArray(data)) {
-		if (!isRecord(uiSchema)) {
-			return data;
-		}
-		const rawItems = uiSchema.items;
-		if (!rawItems) {
-			return data;
-		}
+		const rawItems = isRecord(uiSchema) ? uiSchema.items : undefined;
 		let changed = false;
 		const nextItems = data.map((item, index) => {
-			const itemUiSchema = resolveArrayItemUiSchema(rawItems, index);
-			if (!itemUiSchema) {
-				return item;
-			}
+			const itemUiSchema = rawItems ? resolveArrayItemUiSchema(rawItems, index) : undefined;
 			const prunedItem = pruneHiddenFields(item, itemUiSchema, rootFormData, [...path, index]);
-			if (prunedItem !== item) {
-				changed = true;
-			}
+			if (prunedItem !== item) changed = true;
 			return prunedItem;
 		});
 		return changed ? nextItems : data;
 	}
 
-	if (!isRecord(data) || !isRecord(uiSchema)) {
-		return data;
-	}
-
-	const parentPath = buildPathString(path);
+	if (!isRecord(data)) return data;
+	const uiRecord = isRecord(uiSchema) ? uiSchema : undefined;
 	const next: Record<string, any> = {};
 	let changed = false;
 
 	for (const key of Object.keys(data)) {
+		if (UNSAFE_DATA_KEYS.has(key)) {
+			changed = true;
+			continue;
+		}
 		const value = data[key];
-		const fieldUiSchema = isRecord(uiSchema) ? uiSchema[key] : undefined;
-		const visibleOpt = getVisibleOption(isRecord(fieldUiSchema) ? fieldUiSchema : undefined);
-		const isVisible = evaluateVisibleOption(visibleOpt, rootFormData, parentPath);
+		const fieldUiSchema = uiRecord?.[key];
+		const fieldUiRecord = isRecord(fieldUiSchema) ? fieldUiSchema : undefined;
+		const visibleOpt = getVisibleOption(fieldUiRecord);
+		const isVisible = evaluateVisibleOption(visibleOpt, rootFormData, path);
 		if (!isVisible) {
 			changed = true;
 			continue;
 		}
 		let nextValue = value;
-		if ((isRecord(value) || Array.isArray(value)) && isRecord(fieldUiSchema)) {
-			const prunedValue = pruneHiddenFields(value, fieldUiSchema, rootFormData, [...path, key]);
+		if (isRecord(value) || Array.isArray(value)) {
+			const prunedValue = pruneHiddenFields(value, fieldUiRecord, rootFormData, [...path, key]);
 			if (prunedValue !== value) {
 				changed = true;
 				nextValue = prunedValue;

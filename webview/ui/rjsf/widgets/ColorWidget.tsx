@@ -5,10 +5,14 @@ interface ColorWidgetState {
 	draftText: string;
 }
 
+const COLOR_PICKER_VALUE = /^#[0-9a-f]{6}$/i;
+
 /**
  * Custom color picker widget for RJSF
  */
 export class ColorWidget extends React.PureComponent<WidgetProps, ColorWidgetState> {
+	private blurTimer: number | null = null;
+
 	constructor(props: WidgetProps) {
 		super(props);
 		this.state = {
@@ -25,16 +29,30 @@ export class ColorWidget extends React.PureComponent<WidgetProps, ColorWidgetSta
 		}
 	}
 
+	componentWillUnmount(): void {
+		if (this.blurTimer !== null) window.clearTimeout(this.blurTimer);
+	}
+
 	private getEffectiveValue(value: unknown): string {
 		return typeof value === 'string' && value ? value : '#000000';
 	}
 
+	private getPickerValue(value: string): string {
+		return COLOR_PICKER_VALUE.test(value) ? value : '#000000';
+	}
+
+	private scheduleBlurCommit(id: string, value: string): void {
+		if (this.blurTimer !== null) window.clearTimeout(this.blurTimer);
+		this.blurTimer = window.setTimeout(() => {
+			this.blurTimer = null;
+			this.props.onBlur(id, value);
+		}, 0);
+	}
+
 	private commitValue = (next: string) => {
-		const { id, onBlur, onChange } = this.props;
+		const { id, onChange } = this.props;
 		onChange(next);
-		if (typeof onBlur === 'function' && typeof id === 'string' && id) {
-			setTimeout(() => onBlur(id, next), 0);
-		}
+		if (id) this.scheduleBlurCommit(id, next);
 	};
 
 	private handlePickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -48,9 +66,7 @@ export class ColorWidget extends React.PureComponent<WidgetProps, ColorWidgetSta
 	private commitDraftText = () => {
 		const next = this.state.draftText;
 		const current = this.getEffectiveValue(this.props.value);
-		if (next === current) {
-			return;
-		}
+		if (next === current) return;
 		this.commitValue(next);
 	};
 
@@ -59,21 +75,21 @@ export class ColorWidget extends React.PureComponent<WidgetProps, ColorWidgetSta
 	};
 
 	private handleTextKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-		if (event.key === 'Enter') {
-			this.commitDraftText();
-		}
+		if (event.nativeEvent.isComposing) return;
+		if (event.key === 'Enter') this.commitDraftText();
 	};
 
 	render() {
 		const { id, disabled, readonly } = this.props;
 		const effectiveValue = this.getEffectiveValue(this.props.value);
+		const pickerValue = this.getPickerValue(effectiveValue);
 
 		return (
 			<div className="input-group input-group-sm">
 				<input
 					type="color"
 					id={`${id}-picker`}
-					value={effectiveValue}
+					value={pickerValue}
 					disabled={disabled || readonly}
 					onChange={this.handlePickerChange}
 					className="form-control form-control-color"

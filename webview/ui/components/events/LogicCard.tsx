@@ -1,4 +1,4 @@
-import { ObjectUtil, translateSchema } from '@shared';
+import { translateSchema } from '@shared';
 import React, { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { editor } from '../../../editor/CgEventsEditor';
@@ -9,9 +9,12 @@ import { SvgEdit } from '../../svg/SvgEdit';
 import { RJSFConfigsPanel } from '../../rjsf/RJSFConfigsPanel';
 import { FormHistory } from '../../utils/formHistory';
 import { handleUndoRedoShortcuts } from '../../utils/formUndoRedo';
+import { cloneDraftSnapshot } from '../../utils/draftSnapshot';
 import { acquireModalLock } from '../../utils/modalLock';
 import { FormHistoryControls } from '../common/FormHistoryControls';
 import { MonacoEditorComponent } from '../common/MonacoEditorComponent';
+import { collectLogicDataChanges, hasLogicDataConflict, isLogicDataObject } from './LogicDataDraft';
+import { getLogicSchemaEntry, hasLogicSchemaEntry } from './LogicSchemaEntry';
 
 interface LogicCardProps {
 	eventId: string;
@@ -37,16 +40,12 @@ interface LogicJsonDraft {
 	draftData: any;
 }
 
-interface PathChange {
-	path: string[];
-	value: any;
-}
-
 export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardState> {
 	private releaseModalLock: (() => void) | null = null;
 	private formHistory: FormHistory<LogicJsonDraft> | null = null;
 	private jsonContainerRef = React.createRef<HTMLDivElement>();
 	private initialDataSnapshot: any = {};
+	private initialBlockType?: string;
 
 	constructor(props: LogicCardProps) {
 		super(props);
@@ -54,7 +53,7 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 	}
 
 	componentDidMount(): void {
-		winEE.on('keydown', this.handleKeyDown, this);
+		winEE.on('keydown', this.handleKeyDown);
 	}
 
 	componentDidUpdate(prevProps: LogicCardProps, prevState: LogicCardState) {
@@ -73,39 +72,27 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 	}
 
 	componentWillUnmount(): void {
-		winEE.off('keydown', this.handleKeyDown, this);
+		winEE.off('keydown', this.handleKeyDown);
 		this.releaseModalLock?.();
 		this.releaseModalLock = null;
 	}
 
-	private handleKeyDown(event: KeyboardEvent) {
+	private handleKeyDown = (event: KeyboardEvent) => {
 		const schema = editor.getSchema();
 		const block = this.getBlock();
 		const entryKey = block?.type ?? '';
-		if (this.getCanEdit(schema, entryKey)) {
+		if (hasLogicSchemaEntry(schema, this.props.blockType, entryKey)) {
 			return;
 		}
 		handleUndoRedoShortcuts(event, this.jsonContainerRef.current, this.handleUndo, this.handleRedo);
-	}
-
-	private cloneData(value: any): any {
-		try {
-			return JSON.parse(JSON.stringify(value));
-		} catch {
-			return value;
-		}
-	}
-
-	private getCanEdit(schema: any, entryKey: string): boolean {
-		return Boolean(schema && entryKey);
-	}
+	};
 
 	private getBlock() {
 		return editor.getLogicBlock(this.props.eventId, this.props.blockType, this.props.logicIndex);
 	}
 
 	private getDisplayText(blockType: EventBlockType, key: string): string {
-		const entry = editor.getSchema()?.[blockType]?.[key];
+		const entry = getLogicSchemaEntry(editor.getSchema(), blockType, key);
 		if (!entry) {
 			return `${translation.logic.unknownType.getTrans()} - ${key}`;
 		}
@@ -125,12 +112,13 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 			return;
 		}
 		const data = block.data ?? {};
-		const clonedData = this.cloneData(data);
+		const clonedData = cloneDraftSnapshot(data);
 		const jsonText = JSON.stringify(data, null, 2);
 		const schema = editor.getSchema();
 		const entryKey = block.type ?? '';
-		const canEdit = this.getCanEdit(schema, entryKey);
-		this.initialDataSnapshot = this.cloneData(data);
+		const canEdit = hasLogicSchemaEntry(schema, this.props.blockType, entryKey);
+		this.initialDataSnapshot = cloneDraftSnapshot(data);
+		this.initialBlockType = block.type;
 		if (!canEdit) {
 			this.formHistory = new FormHistory({ jsonText, draftData: clonedData }, this.forceUpdate.bind(this));
 		} else {
@@ -148,40 +136,30 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 	private closeDetail = () => {
 		this.setState({ showDetail: false, draftData: {}, jsonError: undefined });
 		this.formHistory = null;
+		this.initialBlockType = undefined;
 	};
 
 	private handleConfigPatch = (patch: any, entryKey?: string) => {
-		if (!patch?.configs || !entryKey) return;
-		if (!Object.prototype.hasOwnProperty.call(patch.configs, entryKey)) return;
+		if (!patch?.configs || entryKey === undefined) return;
+		if (!Object.hasOwn(patch.configs, entryKey)) return;
 		this.setState({ draftData: patch.configs[entryKey] || {} });
 	};
 
-	private collectChanges(previous: any, next: any, basePath: string[], changes: PathChange[]) {
-		if (ObjectUtil.equals(previous, next)) {
-			return;
-		}
-		const prevIsObject = previous && typeof previous === 'object' && !Array.isArray(previous);
-		const nextIsObject = next && typeof next === 'object' && !Array.isArray(next);
-		if (prevIsObject && nextIsObject) {
-			const keys = new Set<string>([...Object.keys(previous), ...Object.keys(next)]);
-			keys.forEach((key) => {
-				this.collectChanges(previous[key], next[key], [...basePath, key], changes);
-			});
-			return;
-		}
-		changes.push({ path: basePath, value: next });
-	}
-
-	private commitDataUpdate(next: any) {
+	private commitDataUpdate(next: any): boolean {
 		const { eventId, blockType, logicIndex } = this.props;
-		const changes: PathChange[] = [];
-		this.collectChanges(this.initialDataSnapshot, next, [], changes);
+		const changes = collectLogicDataChanges(this.initialDataSnapshot, next);
 		if (changes.length === 0) {
-			return;
+			return true;
+		}
+		const currentBlock = this.getBlock();
+		const currentData = currentBlock?.data ?? {};
+		if (!currentBlock || currentBlock.type !== this.initialBlockType || hasLogicDataConflict(this.initialDataSnapshot, currentData, changes)) {
+			return false;
 		}
 		changes.forEach((change) => {
 			editor.updateLogicField(eventId, blockType, logicIndex, change.path, change.value);
 		});
+		return true;
 	}
 
 	private handleJsonChange = (text: string) => {
@@ -190,6 +168,9 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 		let jsonError: string | undefined;
 		try {
 			const parsed = JSON.parse(text || '{}');
+			if (!isLogicDataObject(parsed)) {
+				throw new Error(translation.validation.invalidJson.getTrans());
+			}
 			nextDraft = parsed;
 			jsonError = undefined;
 		} catch (err) {
@@ -226,8 +207,20 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 		if (this.state.jsonError) {
 			return;
 		}
-		this.commitDataUpdate(this.state.draftData);
+		if (!this.commitDataUpdate(this.state.draftData)) {
+			this.setState({ jsonError: translation.validation.dataChanged.getTrans() });
+			return;
+		}
 		this.closeDetail();
+	};
+
+	private toggleJsonEditor = () => {
+		if (this.state.showJsonEditor && this.state.jsonError) return;
+		this.setState({
+			showJsonEditor: !this.state.showJsonEditor,
+			jsonError: undefined,
+			jsonText: JSON.stringify(this.state.draftData ?? {}, null, 2),
+		});
 	};
 
 	render() {
@@ -251,7 +244,7 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 		const data = block.data;
 		const disabled = data ? data['disabled'] === true : false;
 		const schema = editor.getSchema();
-		const canEdit = this.getCanEdit(schema, entryKey);
+		const canEdit = hasLogicSchemaEntry(schema, this.props.blockType, entryKey);
 		const accentBorderClass =
 			accent === 'trigger'
 				? 'border-success'
@@ -310,7 +303,7 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 						</div>
 					)}
 				</div>
-				{this.state.showDetail && canEdit && resolvedEntryKey && createPortal(
+				{this.state.showDetail && canEdit && createPortal(
 					<>
 						<div
 							className="modal show d-block"
@@ -333,8 +326,10 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 									configKey={resolvedEntryKey}
 									onUpdate={(patch) => {
 										this.handleConfigPatch(patch, resolvedEntryKey);
-										if (patch?.configs && Object.prototype.hasOwnProperty.call(patch.configs, resolvedEntryKey)) {
-											this.commitDataUpdate(patch.configs[resolvedEntryKey]);
+										if (patch?.configs && Object.hasOwn(patch.configs, resolvedEntryKey)) {
+											if (!this.commitDataUpdate(patch.configs[resolvedEntryKey])) {
+												throw new Error(translation.validation.dataChanged.getTrans());
+											}
 											this.closeDetail();
 										}
 									}}
@@ -404,13 +399,8 @@ export class LogicCard extends React.PureComponent<LogicCardProps, LogicCardStat
 										<button
 											type="button"
 											className="btn btn-sm btn-outline-secondary"
-											onClick={() =>
-												this.setState({
-													showJsonEditor: !this.state.showJsonEditor,
-													jsonError: undefined,
-													jsonText: JSON.stringify(this.state.draftData ?? {}, null, 2),
-												})
-											}
+											onClick={this.toggleJsonEditor}
+											disabled={this.state.showJsonEditor && !!this.state.jsonError}
 										>
 											{this.state.showJsonEditor ? translation.editor.backToVisual.getTrans() : translation.editor.editAsJson.getTrans()}
 										</button>

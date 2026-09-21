@@ -1,29 +1,22 @@
-import { ICgAppInfo, ICgEventsDocument, ICgEventsParseResult, ICgEventsSchema, ICgEventsSerializeResult, ICgItemInfoList, ObjectUtil } from '@shared';
-import LZString from 'lz-string';
-import path from 'path';
-import { FileSystemWatcher, RelativePattern, Uri, workspace, WorkspaceFolder } from 'vscode';
+import { ICgAppInfo, ICgEventsDocument, ICgEventsParseResult, ICgEventsSchema, ICgEventsSerializeResult, ICgItemInfoList, isCgEventsDocument, isCgEventsSchema, isCgItemInfoList, ObjectUtil } from '@shared';
+import { FileSystemWatcher, FileType, RelativePattern, Uri, workspace, WorkspaceFolder } from 'vscode';
+import { parseCgAppFromScriptsText } from './utils/cgAppScripts';
+import { compareDefaultEventSourceOrder, type DefaultEventSourceOrder, filterDefaultConfigs, mergeDefaultEvents } from './utils/defaultEventsMerge';
+import { parseEventsText, serializeEventsText } from './utils/eventsCodec';
+import { mergeEventsSchemaMap } from './utils/eventsSchemaMerge';
 import { fsUtil } from './utils/fsUtil';
-import { stringUtil } from './utils/stringUtil';
+import { LazyAsyncLoad } from './utils/LazyAsyncLoad';
+import { buildResourceLists } from './utils/resourceList';
+import { getSourceRelativePath as resolveSourceRelativePath, isPreloadSource, isTestSource, PRELOAD_SOURCE_EXCLUDE_GLOB } from './utils/sourceList';
 
 const DISPOSE_TIMEOUT = 60000;
-
-const LZ_PREFIX = '/*lz*/';
-
-const SCRIPTS_KEY = '"CgCfg"';
 const SCRIPTS_PATH = '/static/js/scripts.js';
-
 const ITEMS_PATH = '/static/json/items.json';
-
-const ALLOW_PRELOAD_RESOURECE_TYPES = ['image', 'spritesheet', 'gaf', 'spine', 'sound', 'text', 'tmx', 'twmap', 'twrole', 'other', 'soundPack'];
-
 const SRC_FOLDER_PATH = '/src';
-const EXCLUDE_PRELOAD_SOURCE_EXTS = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'md'];
-
 const EVENTS_SCHEMA_FILE_NAME = 'events.schema.json';
 const CG_EVENTS_ELEMENT_CATEGORIES = ['trigger', 'check', 'action', 'definition'] as const;
-
 const DEFAULT_EVENTS_JSON_FILE_NAME = 'default.events.json';
-const BASE_DEFUALT_EVENTS_JSON: ICgEventsDocument = {
+const BASE_DEFAULT_EVENTS_JSON: ICgEventsDocument = {
     $schema: 'https://code.gamelet.com/gassets/schema/events/v1',
     config: {
         stage: {
@@ -42,215 +35,212 @@ const BASE_DEFUALT_EVENTS_JSON: ICgEventsDocument = {
     events: []
 };
 
-const TEST_FOLDER_NAME = 'test';
-const TEST_FOLDER_PATH = SRC_FOLDER_PATH + '/' + TEST_FOLDER_NAME;
+export type CgProjectChange = 'sources' | 'schema' | 'cgapp' | 'items';
+export type CgProjectFileChange = 'create' | 'change' | 'delete';
+
+export interface CgProjectChangeListener {
+    onCgProjectChange?(change: CgProjectChange): void;
+}
+
+interface DefaultEventsSource extends DefaultEventSourceOrder {
+    json: unknown;
+}
+
+function getSourceRelativePath(workspaceFolder: WorkspaceFolder, uri: Uri): string | undefined {
+    const srcPath = Uri.joinPath(workspaceFolder.uri, SRC_FOLDER_PATH).fsPath;
+    return resolveSourceRelativePath(srcPath, uri.fsPath);
+}
+
+function isDefaultEventsPatch(value: unknown): value is ICgEventsDocument {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const patch = value as Record<string, unknown>;
+    const config = patch.config === undefined ? {} : patch.config;
+    const events = patch.events === undefined ? [] : patch.events;
+    return isCgEventsDocument({ ...patch, config, events });
+}
 
 export class CgProjectParser {
-    protected static readonly _map: Record<string, CgProjectParser> = {};
+    protected static readonly _map = new Map<string, CgProjectParser>();
     protected static _emptyInstance: CgProjectParser | undefined;
 
     public static getInstance(workspace: WorkspaceFolder | undefined): CgProjectParser {
         if (!workspace) {
-            return CgProjectParser._emptyInstance ?? new CgProjectParser();
+            if (!CgProjectParser._emptyInstance) {
+                CgProjectParser._emptyInstance = new CgProjectParser();
+            }
+            return CgProjectParser._emptyInstance;
         }
-        return CgProjectParser._map[workspace.uri.toString()] ?? new CgProjectParser(workspace);
+
+        const key = workspace.uri.toString();
+        let parser = CgProjectParser._map.get(key);
+        if (!parser) {
+            parser = new CgProjectParser(workspace);
+            CgProjectParser._map.set(key, parser);
+        }
+        return parser;
     }
 
     public static getInstanceInWorkspace(uri: Uri): CgProjectParser & { workspace: WorkspaceFolder } | undefined {
         const workspaceFolder = workspace.getWorkspaceFolder(uri);
-        if (workspaceFolder) {
-            const parser = CgProjectParser._map[workspaceFolder.uri.toString()];
-            if (parser && parser.workspace) {
-                return parser as CgProjectParser & { workspace: WorkspaceFolder };
-            }
+        if (!workspaceFolder) return undefined;
+        const parser = CgProjectParser._map.get(workspaceFolder.uri.toString());
+        if (parser?.workspace) {
+            return parser as CgProjectParser & { workspace: WorkspaceFolder };
         }
+        return undefined;
     }
 
-    public static onAllEvent(watcher: FileSystemWatcher, listener: (event: string, uri: Uri) => any, thisArgs?: any): void {
-        watcher.onDidCreate(e => listener.call(thisArgs, 'create', e));
-        watcher.onDidChange(e => listener.call(thisArgs, 'change', e));
-        watcher.onDidDelete(e => listener.call(thisArgs, 'delete', e));
+    public static onAllEvent(
+        watcher: FileSystemWatcher,
+        listener: (event: CgProjectFileChange, uri: Uri) => void | Promise<void>
+    ): void {
+        watcher.onDidCreate(e => listener('create', e));
+        watcher.onDidChange(e => listener('change', e));
+        watcher.onDidDelete(e => listener('delete', e));
     }
 
     public static setupWatcher(): FileSystemWatcher[] {
         const scriptsWatcher = workspace.createFileSystemWatcher('**' + SCRIPTS_PATH);
-        CgProjectParser.onAllEvent(scriptsWatcher, (_, uri: Uri) => {
+        CgProjectParser.onAllEvent(scriptsWatcher, async (event, uri: Uri) => {
             const parser = this.getInstanceInWorkspace(uri);
-            if (parser && parser._loadScriptsPromise !== undefined && Uri.joinPath(parser.workspace.uri, SCRIPTS_PATH).toString() === uri.toString()) {
-                return parser._loadScripts();
+            if (!parser || !parser._scriptsLoad.started || Uri.joinPath(parser.workspace.uri, SCRIPTS_PATH).toString() !== uri.toString()) {
+                return;
             }
+            if (event === 'delete') {
+                await parser._scriptsLoad.waitForPending();
+                parser._cgApp = undefined;
+                parser._resourceList = [];
+                parser._resourceExcludeTestList = [];
+                parser._isResourceListNeedUpdate = false;
+                parser._notifyLabels('cgapp');
+                return;
+            }
+            await parser._scriptsLoad.waitForPending();
+            await parser._loadScripts();
+            parser._notifyLabels('cgapp');
         });
 
         const itemsWatcher = workspace.createFileSystemWatcher('**' + ITEMS_PATH);
-        CgProjectParser.onAllEvent(itemsWatcher, (_, uri: Uri) => {
+        CgProjectParser.onAllEvent(itemsWatcher, async (event, uri: Uri) => {
             const parser = this.getInstanceInWorkspace(uri);
-            if (parser && parser._loadItemsPromise !== undefined && Uri.joinPath(parser.workspace.uri, ITEMS_PATH).toString() === uri.toString()) {
-                return parser._loadItems();
+            if (!parser || !parser._itemsLoad.started || Uri.joinPath(parser.workspace.uri, ITEMS_PATH).toString() !== uri.toString()) {
+                return;
             }
+            if (event === 'delete') {
+                await parser._itemsLoad.waitForPending();
+                parser._itemList = undefined;
+                parser._notifyLabels('items');
+                return;
+            }
+            await parser._itemsLoad.waitForPending();
+            await parser._loadItems();
+            parser._notifyLabels('items');
         });
 
         const srcWatcher = workspace.createFileSystemWatcher('**' + SRC_FOLDER_PATH + '/**/*');
-        CgProjectParser.onAllEvent(srcWatcher, (event: string, uri: Uri) => {
+        CgProjectParser.onAllEvent(srcWatcher, async (event, uri: Uri) => {
             const parser = this.getInstanceInWorkspace(uri);
-            if (!parser || !uri.toString().startsWith(Uri.joinPath(parser.workspace.uri, SRC_FOLDER_PATH).toString())) {
-                return;
+            if (!parser || !getSourceRelativePath(parser.workspace, uri)) return;
+
+            if (event === 'create') {
+                try {
+                    const stat = await workspace.fs.stat(uri);
+                    if ((stat.type & FileType.File) === 0) return;
+                } catch {
+                    return;
+                }
             }
 
-            if (event === 'create' || event === 'delete') {
-                parser._updateSource(uri, event.startsWith('d'));
-            }
-
-            switch (path.posix.basename(uri.path)) {
-                case EVENTS_SCHEMA_FILE_NAME:
-                    if (parser._loadEventsSchemaPromise !== undefined) {
-                        parser._updateEventsSchemaInMap(uri);
-                    }
-                    break;
-                case DEFAULT_EVENTS_JSON_FILE_NAME:
+            if ((event === 'create' || event === 'delete') && parser._updateSource(uri, event === 'delete')) {
+                parser._notifyLabels('sources');
             }
         });
 
-        return [scriptsWatcher, itemsWatcher, srcWatcher];
+        const schemaWatcher = workspace.createFileSystemWatcher('**/' + EVENTS_SCHEMA_FILE_NAME);
+        CgProjectParser.onAllEvent(schemaWatcher, async (event, uri: Uri) => {
+            const parser = this.getInstanceInWorkspace(uri);
+            if (!parser || !parser._eventsSchemaLoad.started) return;
+            const key = uri.toString();
+            parser._eventsSchemaVersions.set(key, (parser._eventsSchemaVersions.get(key) ?? 0) + 1);
+            if (event === 'delete') {
+                if (parser._removeEventsSchemaFromMap(uri)) parser._notifyLabels('schema');
+                return;
+            }
+            if (await parser._updateEventsSchemaInMap(uri)) parser._notifyLabels('schema');
+        });
+
+        return [scriptsWatcher, itemsWatcher, srcWatcher, schemaWatcher];
     }
 
     public static parseEvents(input: string): ICgEventsParseResult {
-        try {
-            input = input.trim();
-            if (input.startsWith('{')) {
-                return {
-                    format: 'json',
-                    json: JSON.parse(input)
-                };
-            }
-            try {
-                input = atob(input);
-            } catch { }
-            if (!input.startsWith('{')) {
-                input = input.substring(LZ_PREFIX.length);
-
-                const index = Math.floor((input.length - 3) / 2);
-                input = input.substring(0, index) + input.substring(index + 3);
-                input = LZString.decompressFromBase64(input);
-            }
-            return {
-                format: 'lz',
-                json: JSON.parse(input)
-            };
-        } catch (e) {
-            console.error('Error in parse events:', e);
-            return {
-                format: 'error',
-                error: e
-            };
-        }
+        return parseEventsText(input);
     }
 
     public static serializeEvents(input: ICgEventsParseResult): ICgEventsSerializeResult {
-        try {
-            switch (input.format) {
-                case 'json':
-                    return {
-                        format: 'json',
-                        text: JSON.stringify(input.json, null, '\t')
-                    };
-                case 'lz':
-                    let output = LZString.compressToBase64(JSON.stringify(input.json));
-                    const index = Math.floor(output.length / 2);
-                    let n = (17 * output.length).toString(36);
-                    if (n.length > 3) {
-                        n = n.substring(0, 3);
-                    } else {
-                        for (; n.length < 3;) {
-                            n += '0';
-                        }
-                    }
-                    output = output.substring(0, index) + n + output.substring(index);
-                    output = btoa(LZ_PREFIX + output);
-                    return {
-                        format: 'lz',
-                        text: output
-                    };
-            }
-            throw Error('Invalid format');
-        } catch (e) {
-            console.error('Error in serialize events:', e);
-            return {
-                format: 'error',
-                error: e
-            };
-        }
+        return serializeEventsText(input);
     }
 
-    protected readonly _labelList: any[] = [];
-
+    protected readonly _labelList = new Set<CgProjectChangeListener>();
     protected _cgApp: ICgAppInfo | undefined;
     protected _itemList: ICgItemInfoList | undefined;
     protected _resourceList: string[] = [];
     protected _resourceExcludeTestList: string[] = [];
     protected _sourceList: string[] = [];
     protected _sourceExcludeTestList: string[] = [];
+    protected _sourceVersion = 0;
     protected _eventsSchemaMap: Record<string, ICgEventsSchema> = {};
+    protected _eventsSchemaVersions = new Map<string, number>();
     protected _eventsSchema: ICgEventsSchema = this._createEmptyEventsSchema();
-
-    protected _isSourceListNeedSort: boolean = false;
-    protected _isEventsSchemaNeedMerge: boolean = false;
-
-    protected _loadScriptsPromise: Promise<void> | undefined | null;
-    protected _loadItemsPromise: Promise<void> | undefined | null;
-    protected _loadSourcePromise: Promise<void> | undefined | null;
-    protected _updateEventsSchemaPromises: Promise<void>[] = [];
-    protected _loadEventsSchemaPromise: Promise<void> | undefined | null;
-
+    protected _isResourceListNeedUpdate = true;
+    protected _isSourceListNeedSort = false;
+    protected _isEventsSchemaNeedMerge = false;
+    protected readonly _scriptsLoad = new LazyAsyncLoad();
+    protected readonly _itemsLoad = new LazyAsyncLoad();
+    protected readonly _sourceLoad = new LazyAsyncLoad();
+    protected _updateEventsSchemaPromises: Promise<boolean>[] = [];
+    protected readonly _eventsSchemaLoad = new LazyAsyncLoad();
     protected _disposeTimeout: NodeJS.Timeout | undefined;
-
     public readonly uriStr: string | undefined;
 
-    constructor(public readonly workspace?: WorkspaceFolder) {
-        if (!workspace) {
-            if (CgProjectParser._emptyInstance) {
-                return CgProjectParser._emptyInstance;
-            }
-            CgProjectParser._emptyInstance = this;
-        } else {
-            this.uriStr = workspace.uri.toString();
-            if (CgProjectParser._map[this.uriStr]) {
-                return CgProjectParser._map[this.uriStr];
-            }
-            CgProjectParser._map[this.uriStr] = this;
-        }
+    private constructor(public readonly workspace?: WorkspaceFolder) {
+        this.uriStr = workspace?.uri.toString();
         console.log(`CG project parser create at ${this.uriStr}`);
     }
 
-    public addLabel(label: any) {
-        this._labelList.push(label);
-        console.log(`CG project parser add label at ${this.uriStr}`);
+    public addLabel(label: CgProjectChangeListener) {
+        if (this._disposeTimeout !== undefined) {
+            clearTimeout(this._disposeTimeout);
+            this._disposeTimeout = undefined;
+        }
+        this._labelList.add(label);
     }
 
-    public removeLabel(label: any) {
-        const index = this._labelList.indexOf(label);
-        if (index !== -1) {
-            this._labelList.splice(index, 1);
-        }
-        console.log(`CG project parser remove label at ${this.uriStr}`);
-        if (this._labelList.length === 0) {
-            if (this._disposeTimeout !== undefined) {
-                clearTimeout(this._disposeTimeout);
-            }
-            this._disposeTimeout = setTimeout(() => {
-                if (this._labelList.length === 0) {
-                    this.dispose();
-                }
-            }, DISPOSE_TIMEOUT);
+    public removeLabel(label: CgProjectChangeListener) {
+        this._labelList.delete(label);
+        if (this._labelList.size !== 0) return;
+        if (this._disposeTimeout !== undefined) clearTimeout(this._disposeTimeout);
+        this._disposeTimeout = setTimeout(() => {
+            this._disposeTimeout = undefined;
+            if (this._labelList.size === 0) this.dispose();
+        }, DISPOSE_TIMEOUT);
+    }
+
+    protected _notifyLabels(change: CgProjectChange): void {
+        for (const label of this._labelList) {
+            label?.onCgProjectChange?.(change);
         }
     }
 
     public dispose() {
+        if (this._disposeTimeout !== undefined) {
+            clearTimeout(this._disposeTimeout);
+            this._disposeTimeout = undefined;
+        }
         if (CgProjectParser._emptyInstance === this) {
             CgProjectParser._emptyInstance = undefined;
         } else if (this.uriStr !== undefined) {
-            delete CgProjectParser._map[this.uriStr];
+            CgProjectParser._map.delete(this.uriStr);
         }
-        console.log(`CG project parser dispose at ${this.uriStr}`);
     }
 
     protected async _readScripts(uri: Uri): Promise<void> {
@@ -260,220 +250,156 @@ export class CgProjectParser {
                 this._cgApp = undefined;
                 return;
             }
-            const index = text.lastIndexOf(SCRIPTS_KEY);
-            const sIndex = text.indexOf('"', index + SCRIPTS_KEY.length) + 1;
-            const eIndex = text.indexOf('"', sIndex + 1);
-            if (index === -1 || sIndex === -1 || eIndex === -1) {
-                this._cgApp = undefined;
-                return;
-            }
-            this._cgApp = JSON.parse(atob(text.substring(sIndex, eIndex)));
+            this._cgApp = parseCgAppFromScriptsText(text);
         } catch (e) {
             this._cgApp = undefined;
             console.error(`Error in read scripts at ${this.uriStr}:`, e);
         }
     }
 
-    protected async _loadScripts(): Promise<void> {
-        if (!this.workspace) {
-            return;
-        }
-        if (this._loadScriptsPromise) {
-            return this._loadScriptsPromise;
-        }
-        this._loadScriptsPromise = this._readScripts(Uri.joinPath(this.workspace.uri, SCRIPTS_PATH))
-            .finally(() => { this._loadScriptsPromise = null; });
-        this._resourceList = [];
-        console.log(`Loading scripts.js at ${this.uriStr}`);
-        return this._loadScriptsPromise;
+    private _loadScriptsData(): Promise<void> {
+        if (!this.workspace) return Promise.resolve();
+        this._isResourceListNeedUpdate = true;
+        return this._readScripts(Uri.joinPath(this.workspace.uri, SCRIPTS_PATH));
+    }
+
+    protected _loadScripts(): Promise<void> {
+        return this._scriptsLoad.reload(() => this._loadScriptsData());
     }
 
     public async getCgApp(): Promise<ICgAppInfo | undefined> {
-        if (!this._cgApp && this.workspace) {
-            await this._loadScripts();
-        }
+        if (!this.workspace) return this._cgApp;
+        await this._scriptsLoad.ensure(() => this._loadScriptsData());
         return this._cgApp;
     }
 
-    protected async _loadingItemsIconAsBase64(): Promise<void> {
-        if (!this.workspace || !this._itemList) {
-            return;
-        }
-
-        const workspaceFolder = this.workspace;
-        await Promise.all(this._itemList.list.map(async item => {
-            const iconUri = Uri.joinPath(workspaceFolder.uri, item.iconUrl);
-            const ext = path.extname(iconUri.fsPath).substring(1);
-            const base64 = await fsUtil.readFile(iconUri, 'base64');
-            item.iconUrl = `data:image/${ext};base64,${base64}`;
-        }));
-    };
-
     protected async _readItems(uri: Uri): Promise<void> {
-        try {
-            this._itemList = await fsUtil.readJson(uri);
-            await this._loadingItemsIconAsBase64();
-        } catch (e) {
-            this._itemList = undefined;
-            console.error(`Error in read items at ${this.uriStr}:`, e);
-        }
+        const items = await fsUtil.readJson(uri);
+        this._itemList = isCgItemInfoList(items) ? items : undefined;
     }
 
-    protected async _loadItems(): Promise<void> {
-        if (!this.workspace) {
-            return;
-        }
-        if (this._loadItemsPromise) {
-            return this._loadItemsPromise;
-        }
-        this._loadItemsPromise = this._readItems(Uri.joinPath(this.workspace.uri, ITEMS_PATH))
-            .finally(() => { this._loadItemsPromise = null; });
-        console.log(`Loading items.json at ${this.uriStr}`);
-        return this._loadItemsPromise;
+    private _loadItemsData(): Promise<void> {
+        if (!this.workspace) return Promise.resolve();
+        return this._readItems(Uri.joinPath(this.workspace.uri, ITEMS_PATH));
+    }
+
+    protected _loadItems(): Promise<void> {
+        return this._itemsLoad.reload(() => this._loadItemsData());
     }
 
     public async getItemList(): Promise<ICgItemInfoList | undefined> {
-        if (!this._itemList && this.workspace) {
-            await this._loadItems();
-        }
+        if (!this.workspace) return this._itemList;
+        await this._itemsLoad.ensure(() => this._loadItemsData());
         return this._itemList;
     }
 
     protected _updateResourceList(): void {
-        if (!this.workspace || !this._cgApp) {
-            return;
-        }
-        const { aliasMap, resourceMap } = this._cgApp.appResourcePack;
-        const list: string[] = [];
-        const excludeTestList: string[] = [];
-        for (const key in aliasMap) {
-            const id = aliasMap[key].resourceId;
-            const type = resourceMap[id].type;
-            if (!ALLOW_PRELOAD_RESOURECE_TYPES.includes(type)) {
-                continue;
-            }
-            list.push(key);
-            if (aliasMap[key].mode !== 'TEST') {
-                excludeTestList.push(key);
-            }
-        }
-        this._resourceList = list;
-        this._resourceExcludeTestList = excludeTestList;
-        console.log(`Update resource list at ${this.uriStr}`);
+        const { all, excludingTest } = buildResourceLists(this._cgApp);
+        this._resourceList = all;
+        this._resourceExcludeTestList = excludingTest;
+        this._isResourceListNeedUpdate = false;
     }
 
     public async getResourceList(excludeTest = false): Promise<string[]> {
-        if (this._resourceList.length === 0) {
+        if (this._isResourceListNeedUpdate) {
             await this.getCgApp();
             this._updateResourceList();
-            this._resourceList = this._resourceList.sort(stringUtil.compareCaseAware);
-            this._resourceExcludeTestList = this._resourceExcludeTestList.sort(stringUtil.compareCaseAware);
         }
-        if (excludeTest) {
-            return this._resourceExcludeTestList;
-        }
-        return this._resourceList;
+        return excludeTest ? this._resourceExcludeTestList : this._resourceList;
     }
 
     protected async _findAllSource(): Promise<void> {
-        if (!this.workspace) {
+        if (!this.workspace) return;
+        const workspaceFolder = this.workspace;
+        const srcUri = Uri.joinPath(workspaceFolder.uri, SRC_FOLDER_PATH);
+        for (;;) {
+            const sourceVersion = this._sourceVersion;
+            const uris = await workspace.findFiles(
+                new RelativePattern(srcUri, '**'),
+                PRELOAD_SOURCE_EXCLUDE_GLOB
+            );
+            if (sourceVersion !== this._sourceVersion) continue;
+
+            const sourceList = uris
+                .map(uri => getSourceRelativePath(workspaceFolder, uri))
+                .filter((relativePath): relativePath is string => !!relativePath && isPreloadSource(relativePath));
+            this._sourceList = sourceList;
+            this._sourceExcludeTestList = sourceList.filter(relativePath => !isTestSource(relativePath));
+            this._isSourceListNeedSort = true;
             return;
         }
-
-        const srcUri = Uri.joinPath(this.workspace.uri, SRC_FOLDER_PATH);
-        const uris = await workspace.findFiles(
-            new RelativePattern(srcUri, '**'),
-            `**/*.{${EXCLUDE_PRELOAD_SOURCE_EXTS.join(',')}}`
-        );
-
-        this._sourceList = uris.map(uri => path.posix.relative(srcUri.toString(), uri.toString()));
-        this._sourceExcludeTestList = this._sourceList.filter(uriStr => !uriStr.startsWith(TEST_FOLDER_NAME));
-        this._isSourceListNeedSort = true;
     }
 
-    protected async _loadSource(): Promise<void> {
-        if (!this.workspace) {
-            return;
-        }
-        if (this._loadSourcePromise) {
-            return this._loadSourcePromise;
-        }
-        this._loadSourcePromise = this._findAllSource().finally(() => { this._loadSourcePromise = null; });
-        console.log(`Loading project source at ${this.uriStr}`);
-        return this._loadSourcePromise;
-    }
-
-    protected _updateSource(uri: Uri, del = false): void {
-        if (!this.workspace) {
-            return;
-        }
-
-        const srcUri = Uri.joinPath(this.workspace.uri, SRC_FOLDER_PATH);
-        const uriStr = path.posix.relative(srcUri.toString(), uri.toString());
-        const index = this._sourceList.indexOf(uriStr);
-        const indexEx = this._sourceExcludeTestList.indexOf(uriStr);
+    protected _updateSource(uri: Uri, del = false): boolean {
+        if (!this.workspace) return false;
+        const relativePath = getSourceRelativePath(this.workspace, uri);
+        if (!relativePath || !isPreloadSource(relativePath)) return false;
+        this._sourceVersion += 1;
+        const index = this._sourceList.indexOf(relativePath);
+        const indexEx = this._sourceExcludeTestList.indexOf(relativePath);
         if (del) {
+            let changed = false;
             if (index !== -1) {
                 this._sourceList.splice(index, 1);
+                changed = true;
             }
             if (indexEx !== -1) {
                 this._sourceExcludeTestList.splice(indexEx, 1);
+                changed = true;
             }
-        } else {
-            if (index === -1) {
-                this._sourceList.push(uriStr);
-                this._isSourceListNeedSort = true;
-            }
-            if (indexEx === -1 && uriStr.startsWith(TEST_FOLDER_NAME)) {
-                this._sourceExcludeTestList.push(uriStr);
-                this._isSourceListNeedSort = true;
-            }
+            return changed;
         }
+        let changed = false;
+        if (index === -1) {
+            this._sourceList.push(relativePath);
+            this._isSourceListNeedSort = true;
+            changed = true;
+        }
+        if (!isTestSource(relativePath) && indexEx === -1) {
+            this._sourceExcludeTestList.push(relativePath);
+            this._isSourceListNeedSort = true;
+            changed = true;
+        }
+        return changed;
     }
 
     public async getSourceList(excludeTest = false): Promise<string[]> {
-        if (this._loadSourcePromise === undefined) {
-            await this._loadSource();
-        }
-        if (this._loadSourcePromise) {
-            await this._loadSourcePromise;
-        }
+        await this._sourceLoad.ensure(() => this._findAllSource());
         if (this._isSourceListNeedSort) {
             this._sourceList.sort();
             this._sourceExcludeTestList.sort();
             this._isSourceListNeedSort = false;
         }
-        if (excludeTest) {
-            return this._sourceExcludeTestList;
-        }
-        return this._sourceList;
+        return excludeTest ? this._sourceExcludeTestList : this._sourceList;
     }
 
     protected _createEmptyEventsSchema(): ICgEventsSchema {
-        return {
-            trigger: {},
-            check: {},
-            action: {},
-            definition: {}
-        };
+        return { trigger: {}, check: {}, action: {}, definition: {} };
     }
 
-    protected async __updateEventsSchemaInMap(uri: Uri): Promise<void> {
-        const schema = await fsUtil.readJson(uri) as ICgEventsSchema | undefined;
+    protected _removeEventsSchemaFromMap(uri: Uri): boolean {
+        const key = uri.toString();
+        if (!(key in this._eventsSchemaMap)) return false;
+        delete this._eventsSchemaMap[key];
         this._isEventsSchemaNeedMerge = true;
-        if (typeof schema !== 'object') {
-            delete this._eventsSchemaMap[uri.toString()];
-            return;
-        }
-        this._eventsSchemaMap[uri.toString()] = schema;
+        return true;
     }
 
-    protected _updateEventsSchemaInMap(uri: Uri): Promise<void> {
-        const promise = this.__updateEventsSchemaInMap(uri).finally(() => {
+    protected async __updateEventsSchemaInMap(uri: Uri, version: number): Promise<boolean> {
+        const key = uri.toString();
+        const schema = await fsUtil.readJson(uri);
+        if ((this._eventsSchemaVersions.get(key) ?? 0) !== version) return false;
+        if (!isCgEventsSchema(schema)) return this._removeEventsSchemaFromMap(uri);
+        this._eventsSchemaMap[key] = schema;
+        this._isEventsSchemaNeedMerge = true;
+        return true;
+    }
+
+    protected _updateEventsSchemaInMap(uri: Uri): Promise<boolean> {
+        const version = this._eventsSchemaVersions.get(uri.toString()) ?? 0;
+        const promise = this.__updateEventsSchemaInMap(uri, version).finally(() => {
             const index = this._updateEventsSchemaPromises.indexOf(promise);
-            if (index !== -1) {
-                this._updateEventsSchemaPromises.splice(index, 1);
-            }
+            if (index !== -1) this._updateEventsSchemaPromises.splice(index, 1);
         });
         this._updateEventsSchemaPromises.push(promise);
         return promise;
@@ -485,70 +411,26 @@ export class CgProjectParser {
         }
     }
 
-    protected async _loadEventsSchema(): Promise<void> {
-        if (!this.workspace) {
-            return;
-        }
-        if (this._loadEventsSchemaPromise) {
-            return this._loadEventsSchemaPromise;
-        }
-
-        const workspaceFolder = this.workspace;
-        this._loadEventsSchemaPromise = (async () => {
-            const pattern = new RelativePattern(workspaceFolder, '**/' + EVENTS_SCHEMA_FILE_NAME);
-            const uris = await workspace.findFiles(pattern);
-            if (!uris.length) {
-                console.error(`Could not find any events.schema.json files at ${this.uriStr}`);
-                return;
-            }
-            uris.forEach(uri => this._updateEventsSchemaInMap(uri));
-            await this._checkUpdateEventsSchemaPromisesResolve();
-        })().finally(() => this._loadEventsSchemaPromise = null);
-
-        return this._loadEventsSchemaPromise;
-    };
-
-    protected _mergeIntoEventsSchema(target: ICgEventsSchema, source: ICgEventsSchema): void {
-        for (const cat of CG_EVENTS_ELEMENT_CATEGORIES) {
-            const cat1 = target[cat];
-            const cat2 = source?.[cat] ?? {};
-            for (const type in cat2) {
-                const val1 = cat1[type];
-                const val2 = cat2[type];
-                if (!val1) {
-                    cat1[type] = val2;
-                    continue;
-                }
-                console.info(`Found same ${cat} schema [${type}] at ${this.uriStr}`);
-                if (val1.timestamp > val2.timestamp) {
-                    continue;
-                }
-                cat1[type] = val2;
-            }
-        }
+    private async _loadEventsSchemaData(): Promise<void> {
+        if (!this.workspace) return;
+        const uris = await workspace.findFiles(new RelativePattern(this.workspace, '**/' + EVENTS_SCHEMA_FILE_NAME));
+        for (const uri of uris) this._updateEventsSchemaInMap(uri);
+        await this._checkUpdateEventsSchemaPromisesResolve();
     }
 
     protected _mergeEventsSchemasInMap(): void {
-        this._eventsSchema = this._createEmptyEventsSchema();
-        for (const key in this._eventsSchemaMap) {
-            this._mergeIntoEventsSchema(this._eventsSchema, this._eventsSchemaMap[key]);
-        }
-        console.log(`Merge schema in map at ${this.uriStr}`);
+        this._eventsSchema = mergeEventsSchemaMap(this._eventsSchemaMap);
     }
 
     public isEmptyEventsSchema(schema: ICgEventsSchema): boolean {
         for (const cat of CG_EVENTS_ELEMENT_CATEGORIES) {
-            for (const _ in schema[cat] ?? {}) {
-                return false;
-            }
+            if (Object.keys(schema[cat] ?? {}).length) return false;
         }
         return true;
     }
 
     public async getEventsSchema(): Promise<ICgEventsSchema> {
-        if (this.isEmptyEventsSchema(this._eventsSchema)) {
-            await this._loadEventsSchema();
-        }
+        await this._eventsSchemaLoad.ensure(() => this._loadEventsSchemaData());
         await this._checkUpdateEventsSchemaPromisesResolve();
         if (this._isEventsSchemaNeedMerge) {
             this._mergeEventsSchemasInMap();
@@ -558,96 +440,55 @@ export class CgProjectParser {
     }
 
     protected _filterDefaultEvents(json: ICgEventsDocument, schema: ICgEventsSchema): ICgEventsDocument {
-        const configs = json?.config?.configs;
-        if (configs) {
-            const defTypes = schema.definition;
-            for (const defType in configs) {
-                if (defTypes?.[defType]?.use !== 'config') {
-                    delete configs[defType];
-                }
-            }
-        }
+        filterDefaultConfigs(json?.config?.configs, schema.definition);
         return json;
     }
 
-    protected async _findAllDefaultEvents(): Promise<ICgEventsDocument[]> {
-        if (!this.workspace) {
-            return [];
+    protected async _readDefaultEventsSource(uri: Uri): Promise<DefaultEventsSource | undefined> {
+        try {
+            const [json, stat] = await Promise.all([
+                fsUtil.readJson(uri),
+                workspace.fs.stat(uri)
+            ]);
+            if (!json) return undefined;
+            return {
+                json,
+                mtime: stat.mtime,
+                key: uri.toString()
+            };
+        } catch {
+            return undefined;
         }
-        const pattern = new RelativePattern(this.workspace, '**/' + DEFAULT_EVENTS_JSON_FILE_NAME);
-        const uris = await workspace.findFiles(pattern);
-        if (!uris.length) {
-            return [];
-        }
-
-        const [schema, files] = await Promise.all([
-            this.getEventsSchema(),
-            Promise.all(
-                uris.map(uri => Promise.all([fsUtil.readJson(uri), workspace.fs.stat(uri)])
-                    .then(file => {
-                        if (file[0] && file[1]) {
-                            return file;
-                        }
-                        return undefined;
-                    }, () => undefined))
-            )
-        ]);
-        return files
-            .filter(file => !!file)
-            .sort((a, b) => a[1].mtime - b[1].mtime)
-            .map(file => this._filterDefaultEvents(file[0], schema));
     }
 
-    protected _mergeIntoDefaultEvents(target: ICgEventsDocument, source: ICgEventsDocument): void {
-        if (!target || !source) {
-            return;
-        }
-        const { config: { stage: sStage, preload: sPreload, configs: sConfigs } = {}, events: sEvents = [] } = source;
-        let { config: { stage: tStage, preload: tPreload, configs: tConfigs }, events: tEvents } = target;
-        if (sStage) {
-            Object.assign(tStage, sStage);
-        }
-        if (sPreload) {
-            if (sPreload.sources) {
-                tPreload.sources = Array.from(new Set(tPreload.sources.concat(sPreload.sources)));
-            }
-            if (sPreload.resourcesExclude) {
-                tPreload.resourcesExclude = Array.from(new Set(tPreload.resourcesExclude.concat(sPreload.resourcesExclude)));
-            }
-        }
-        if (sConfigs) {
-            if (!tConfigs) {
-                tConfigs = target.config.configs = {};
-            }
-            ObjectUtil.removeKeysWithSameValue(tConfigs, sConfigs);
-            ObjectUtil.safeAssign(tConfigs, sConfigs);
-        }
-        if (sEvents) {
-            for (const sEvent of sEvents) {
-                if (tEvents.some(tEvent => tEvent.id === sEvent.id)) {
-                    continue;
-                }
-                tEvents.push(sEvent);
-            }
-        }
+    protected async _findAllDefaultEvents(): Promise<ICgEventsDocument[]> {
+        if (!this.workspace) return [];
+        const uris = await workspace.findFiles(new RelativePattern(this.workspace, '**/' + DEFAULT_EVENTS_JSON_FILE_NAME));
+        if (!uris.length) return [];
+        const [schema, files] = await Promise.all([
+            this.getEventsSchema(),
+            Promise.all(uris.map(uri => this._readDefaultEventsSource(uri)))
+        ]);
+        return files
+            .filter((file): file is DefaultEventsSource & { json: ICgEventsDocument } =>
+                !!file && isDefaultEventsPatch(file.json)
+            )
+            .sort(compareDefaultEventSourceOrder)
+            .map(file => this._filterDefaultEvents(file.json, schema));
     }
 
     public async getDefaultEvents(): Promise<ICgEventsDocument> {
-        const json = ObjectUtil.deepCloneObject(BASE_DEFUALT_EVENTS_JSON) ?? {} as ICgEventsDocument;
-        if (this.workspace === undefined) {
-            return json;
-        }
-        const defaultEventsJsons = await this._findAllDefaultEvents();
-        for (const defaultEventsJson of defaultEventsJsons) {
-            this._mergeIntoDefaultEvents(json, defaultEventsJson);
+        const json = ObjectUtil.deepCloneObject(BASE_DEFAULT_EVENTS_JSON) ?? {} as ICgEventsDocument;
+        if (this.workspace === undefined) return json;
+        for (const defaultEventsJson of await this._findAllDefaultEvents()) {
+            mergeDefaultEvents(json, defaultEventsJson);
         }
         return json;
     }
 
     public isForTest(uri: Uri): boolean | undefined {
-        if (!this.workspace) {
-            return undefined;
-        }
-        return uri.toString().startsWith(Uri.joinPath(this.workspace.uri, TEST_FOLDER_PATH).toString());
+        if (!this.workspace) return undefined;
+        const relativePath = getSourceRelativePath(this.workspace, uri);
+        return relativePath ? isTestSource(relativePath) : false;
     }
 }

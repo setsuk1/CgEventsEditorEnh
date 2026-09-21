@@ -61,6 +61,7 @@ const json: TranslationJson = {
 	},
 	settings: {
 		baseSettingsTitle: '基本設定',
+		baseSummary: '舞台 {{size}}, {{resolution}}, {{alignment}}, 預先載入 {{includedResources}}個資源及 {{sourcesCount}}個原始碼',
 		otherSettingsTitle: '其餘設定',
 		configsTitle: '設定',
 		configSection: '設定',
@@ -217,7 +218,9 @@ const json: TranslationJson = {
 		booleanFalse: '否',
 	},
 	validation: {
+		required: '必填',
 		invalidJson: '無效的 JSON',
+		dataChanged: '此資料已在編輯器外被修改。請關閉並重新開啟後再儲存，以免覆蓋較新的變更。',
 		numberFormatError: '填入的值必須符合型別 number.',
 		noItems: '沒有項目',
 		noMatches: '沒有符合的結果',

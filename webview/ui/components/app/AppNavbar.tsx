@@ -41,6 +41,29 @@ export class AppNavbar extends React.Component<AppNavbarProps> {
 		}
 	};
 
+	private handleHelpKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+		if (event.key !== 'Escape') return;
+		event.preventDefault();
+		event.stopPropagation();
+		this.closeHelpDropdown();
+	};
+
+	private renderExternalLink(code: ExternalUrlCode, label: string) {
+		return (
+			<button
+				key={code}
+				type="button"
+				className="dropdown-item"
+				onClick={() => {
+					this.props.onOpenExternalUrl(code);
+					this.closeHelpDropdown();
+				}}
+			>
+				{label}
+			</button>
+		);
+	}
+
 	private getLanguageLabel(language: IEditorLanguageSetting): string {
 		if (language === 'auto') {
 			return translation.app.languageAuto.getTrans();
@@ -52,6 +75,18 @@ export class AppNavbar extends React.Component<AppNavbarProps> {
 
 	render() {
 		const formatValue = this.props.formatValue;
+		const oldEditorLinks: Array<[ExternalUrlCode, string]> = [
+			[ExternalUrlCode.OLD_EDITOR_BASIC_TUTORIAL, translation.app.basicTutorial.getTrans()],
+			[ExternalUrlCode.OLD_EDITOR_TUTORIAL_SECTION, translation.app.tutorialSection.getTrans()],
+			[ExternalUrlCode.OLD_EDITOR_DISCUSSION, translation.app.discussionSection.getTrans()],
+			[ExternalUrlCode.OLD_EDITOR_SAMPLE_DOWNLOAD, translation.app.sampleDownload.getTrans()],
+		];
+		const originalEditorLinks: Array<[ExternalUrlCode, string]> = [
+			[ExternalUrlCode.ORIGINAL_EDITOR_BASIC_TUTORIAL, translation.app.basicTutorial.getTrans()],
+			[ExternalUrlCode.ORIGINAL_EDITOR_TUTORIAL_SECTION, translation.app.tutorialSection.getTrans()],
+			[ExternalUrlCode.ORIGINAL_EDITOR_DISCUSSION, translation.app.discussionSection.getTrans()],
+			[ExternalUrlCode.ORIGINAL_EDITOR_SAMPLE_DOWNLOAD, translation.app.sampleDownload.getTrans()],
+		];
 		return (
 			<nav
 				ref={this.props.headerRef}
@@ -105,17 +140,23 @@ export class AppNavbar extends React.Component<AppNavbarProps> {
 						>
 							{translation.common.save.getTrans()}
 						</button>
-						<div className="dropdown cgenh-hover-dropdown" ref={this.helpDropdownRef} tabIndex={-1}>
+						<div
+							className="dropdown cgenh-hover-dropdown"
+							ref={this.helpDropdownRef}
+							tabIndex={-1}
+							onKeyDown={this.handleHelpKeyDown}
+						>
 							<button
 								type="button"
 								className="btn btn-sm btn-outline-secondary dropdown-toggle"
 								onMouseEnter={playMouseHoverAudio}
+								aria-haspopup="menu"
 							>
 								{translation.app.help.getTrans()}
 							</button>
 							<ul className="dropdown-menu dropdown-menu-end cgenh-help-dropdown">
 								<li className="cgenh-submenu-container">
-									<span className="dropdown-item" onMouseEnter={playMouseHoverAudio}>
+									<span className="dropdown-item" tabIndex={0} role="button" aria-haspopup="menu" onMouseEnter={playMouseHoverAudio}>
 										<span>{translation.app.formatLabel.getTrans()}: {formatValue.toUpperCase()}</span>
 										<span className="cgenh-submenu-arrow">◀</span>
 									</span>
@@ -137,7 +178,7 @@ export class AppNavbar extends React.Component<AppNavbarProps> {
 									</div>
 								</li>
 								<li className="cgenh-submenu-container">
-									<span className="dropdown-item" onMouseEnter={playMouseHoverAudio}>
+									<span className="dropdown-item" tabIndex={0} role="button" aria-haspopup="menu" onMouseEnter={playMouseHoverAudio}>
 										<span>{translation.app.languageLabel.getTrans()}: {this.getLanguageLabel(this.props.language)}</span>
 										<span className="cgenh-submenu-arrow">◀</span>
 									</span>
@@ -156,75 +197,21 @@ export class AppNavbar extends React.Component<AppNavbarProps> {
 								</li>
 								<li><hr className="dropdown-divider" /></li>
 								<li className="cgenh-submenu-container">
-									<span className="dropdown-item" onMouseEnter={playMouseHoverAudio}>
+									<span className="dropdown-item" tabIndex={0} role="button" aria-haspopup="menu" onMouseEnter={playMouseHoverAudio}>
 										<span>{translation.app.oldEditor.getTrans()}</span>
 										<span className="cgenh-submenu-arrow">◀</span>
 									</span>
 									<div className="cgenh-submenu">
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.OLD_EDITOR_BASIC_TUTORIAL); this.closeHelpDropdown(); }}
-										>
-											{translation.app.basicTutorial.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.OLD_EDITOR_TUTORIAL_SECTION); this.closeHelpDropdown(); }}
-										>
-											{translation.app.tutorialSection.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.OLD_EDITOR_DISCUSSION); this.closeHelpDropdown(); }}
-										>
-											{translation.app.discussionSection.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.OLD_EDITOR_SAMPLE_DOWNLOAD); this.closeHelpDropdown(); }}
-										>
-											{translation.app.sampleDownload.getTrans()}
-										</button>
+										{oldEditorLinks.map(([code, label]) => this.renderExternalLink(code, label))}
 									</div>
 								</li>
 								<li className="cgenh-submenu-container">
-									<span className="dropdown-item" onMouseEnter={playMouseHoverAudio}>
+									<span className="dropdown-item" tabIndex={0} role="button" aria-haspopup="menu" onMouseEnter={playMouseHoverAudio}>
 										<span>{translation.app.originalEditor.getTrans()}</span>
 										<span className="cgenh-submenu-arrow">◀</span>
 									</span>
 									<div className="cgenh-submenu">
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.ORIGINAL_EDITOR_BASIC_TUTORIAL); this.closeHelpDropdown(); }}
-										>
-											{translation.app.basicTutorial.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.ORIGINAL_EDITOR_TUTORIAL_SECTION); this.closeHelpDropdown(); }}
-										>
-											{translation.app.tutorialSection.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.ORIGINAL_EDITOR_DISCUSSION); this.closeHelpDropdown(); }}
-										>
-											{translation.app.discussionSection.getTrans()}
-										</button>
-										<button
-											type="button"
-											className="dropdown-item"
-											onClick={() => { this.props.onOpenExternalUrl(ExternalUrlCode.ORIGINAL_EDITOR_SAMPLE_DOWNLOAD); this.closeHelpDropdown(); }}
-										>
-											{translation.app.sampleDownload.getTrans()}
-										</button>
+										{originalEditorLinks.map(([code, label]) => this.renderExternalLink(code, label))}
 									</div>
 								</li>
 								<li><hr className="dropdown-divider" /></li>

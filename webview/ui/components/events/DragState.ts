@@ -24,11 +24,8 @@ class DragStateManager extends EventEmitter {
 		draggedItems: [],
 	};
 
-	startDrag(eventId: string, blockType: EventBlockType, draggedItems: DraggedItem[]) {
-		if (this.state.isDragging) { return; }
-
+	startDrag(eventId: string, blockType: EventBlockType, draggedItems: DraggedItem[]): void {
 		this.state = {
-			...this.state,
 			isDragging: true,
 			eventId,
 			blockType,
@@ -37,11 +34,9 @@ class DragStateManager extends EventEmitter {
 		this.emit('change', this.state);
 	}
 
-	endDrag() {
-		if (!this.state.isDragging) { return; }
-
+	endDrag(): void {
+		if (!this.state.isDragging) return;
 		this.state = {
-			...this.state,
 			isDragging: false,
 			eventId: null,
 			blockType: null,
@@ -55,9 +50,7 @@ class DragStateManager extends EventEmitter {
 	}
 
 	isDraggingFrom(eventId: string, blockType: EventBlockType): boolean {
-		return this.state.isDragging &&
-			this.state.eventId === eventId &&
-			this.state.blockType === blockType;
+		return this.state.isDragging && this.state.eventId === eventId && this.state.blockType === blockType;
 	}
 
 	canDropTo(blockType: EventBlockType): boolean {

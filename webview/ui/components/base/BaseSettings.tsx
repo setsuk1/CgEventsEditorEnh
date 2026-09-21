@@ -1,11 +1,28 @@
 import baseSettingSchema from '@media/json/basesetting.enheditor.schema.json';
 import { translateSchema } from '@shared';
 import React from 'react';
-import { editor, EditorChangeEvents } from '../../../editor/CgEventsEditor';
+import { editor, EditorChangeEvents, type EditorChangeEventType } from '../../../editor/CgEventsEditor';
 import { translation } from '../../../trans/Trans';
 import { RJSFConfigsPanel } from '../../rjsf/RJSFConfigsPanel';
 import { acquireModalLock } from '../../utils/modalLock';
+import { cloneDraftSnapshot, isDraftSnapshotCurrent } from '../../utils/draftSnapshot';
 import { BaseSettingsSummary } from './BaseSettingsSummary';
+import {
+	getBaseConfigDefinitionLabel,
+	getBaseConfigEntryValue,
+	hasBaseConfigEditKey,
+	mergeBaseConfigPatch,
+	resolveBaseConfigLabel,
+	resolveBaseConfigSchema,
+} from './BaseSettingsData';
+
+const BASE_SETTINGS_REFRESH_EVENTS: readonly EditorChangeEventType[] = [
+	EditorChangeEvents.SCHEMA_UPDATED,
+	EditorChangeEvents.CONFIG_UPDATED,
+	EditorChangeEvents.DOCUMENT_UPDATED,
+	EditorChangeEvents.SOURCES_UPDATED,
+	EditorChangeEvents.RESOURCES_UPDATED,
+];
 
 interface BaseSettingsRJSFProps {
 	onEditAsJson?: () => void;
@@ -15,7 +32,6 @@ interface BaseSettingsRJSFState {
 	editOpen: boolean;
 	configEditKey?: string;
 	configs: Record<string, any>;
-	schemaVersion: number;
 }
 
 /**
@@ -24,6 +40,8 @@ interface BaseSettingsRJSFState {
  */
 export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, BaseSettingsRJSFState> {
 	private releaseModalLock: (() => void) | null = null;
+	private baseEditInitialSnapshot?: Record<string, any>;
+	private configEditInitialSnapshot: unknown = undefined;
 
 	constructor(props: BaseSettingsRJSFProps) {
 		super(props);
@@ -31,18 +49,18 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 			editOpen: false,
 			configEditKey: undefined,
 			configs: this.buildConfigsSnapshot(),
-			schemaVersion: 0,
 		};
 	}
 
 	componentDidMount(): void {
-		// Listen for schema updates to trigger re-render
-		editor.on(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdate, this);
+		for (const eventType of BASE_SETTINGS_REFRESH_EVENTS) {
+			editor.on(eventType, this.handleEditorDataUpdate);
+		}
 	}
 
 	componentDidUpdate(_prevProps: BaseSettingsRJSFProps, prevState: BaseSettingsRJSFState) {
-		const overlayOpen = this.state.editOpen || !!this.state.configEditKey;
-		const prevOverlayOpen = prevState.editOpen || !!prevState.configEditKey;
+		const overlayOpen = this.state.editOpen || hasBaseConfigEditKey(this.state.configEditKey);
+		const prevOverlayOpen = prevState.editOpen || hasBaseConfigEditKey(prevState.configEditKey);
 		if (overlayOpen !== prevOverlayOpen) {
 			if (overlayOpen) {
 				this.releaseModalLock = this.releaseModalLock ?? acquireModalLock();
@@ -54,19 +72,19 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 	}
 
 	componentWillUnmount(): void {
-		editor.off(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdate, this);
+		for (const eventType of BASE_SETTINGS_REFRESH_EVENTS) {
+			editor.off(eventType, this.handleEditorDataUpdate);
+		}
 		this.releaseModalLock?.();
 		this.releaseModalLock = null;
 	}
 
-	private handleSchemaUpdate = () => {
-		// Increment schemaVersion to trigger re-render
-		this.setState((prev) => ({ schemaVersion: prev.schemaVersion + 1 }));
+	private handleEditorDataUpdate = () => {
+		this.forceUpdate();
 	};
 
 	private buildConfigsSnapshot(configOverride?: Record<string, any>): Record<string, any> {
 		const config = configOverride ?? editor.getEventsJson()?.config;
-		// Build the EventsSettings config object that matches RJSF schema structure
 		return {
 			EventsSettings: {
 				stage: config?.stage ?? {},
@@ -77,10 +95,12 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 
 	private openEdit = () => {
 		const config = editor.getEventsJson()?.config;
+		const configs = this.buildConfigsSnapshot(config);
+		this.baseEditInitialSnapshot = cloneDraftSnapshot(configs);
 		this.setState({
 			editOpen: true,
 			configEditKey: undefined,
-			configs: this.buildConfigsSnapshot(config),
+			configs,
 		});
 	};
 
@@ -88,8 +108,10 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 
 	private handleUpdate = (patch: Record<string, any>) => {
 		if (patch?.configs?.EventsSettings) {
+			if (this.baseEditInitialSnapshot && !isDraftSnapshotCurrent(this.baseEditInitialSnapshot, this.buildConfigsSnapshot())) {
+				throw new Error(translation.validation.dataChanged.getTrans());
+			}
 			const eventsSettings = patch.configs.EventsSettings;
-			// Update the editor with the new stage and preload settings
 			editor.updateConfig({
 				stage: eventsSettings.stage,
 				preload: eventsSettings.preload,
@@ -98,19 +120,22 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 	};
 
 	public openConfig = (configKey: string) => {
-		this.setState({
-			configEditKey: configKey,
-			configs: this.buildConfigsSnapshot(),
-		});
+		this.configEditInitialSnapshot = cloneDraftSnapshot(getBaseConfigEntryValue(editor.getEventsJson()?.config.configs, configKey));
+		this.setState({ configEditKey: configKey });
 	};
 
 	private handleConfigPatch = (patch: Record<string, any>) => {
-		if (patch?.configs && typeof patch.configs === 'object') {
-			this.setState((prev) => ({
-				configs: { ...(prev.configs || {}), ...patch.configs },
-			}));
+		if (!patch?.configs || typeof patch.configs !== 'object' || Array.isArray(patch.configs)) return;
+		const editingKey = this.state.configEditKey;
+		if (hasBaseConfigEditKey(editingKey) && !isDraftSnapshotCurrent(
+			this.configEditInitialSnapshot,
+			getBaseConfigEntryValue(editor.getEventsJson()?.config.configs, editingKey),
+		)) {
+			throw new Error(translation.validation.dataChanged.getTrans());
 		}
-		editor.updateConfig(patch);
+		const currentConfigs = editor.getEventsJson()?.config.configs;
+		const nextConfigs = mergeBaseConfigPatch(currentConfigs, patch.configs);
+		editor.updateConfig({ ...patch, configs: nextConfigs });
 	};
 
 	render() {
@@ -122,11 +147,9 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 		const preload = config?.preload ?? {};
 		const configs = config?.configs ?? {};
 
-		// Get the base settings label from schema
 		const baseLabelObj = baseSettingSchema.definition?.EventsSettings?.label;
 		const baseLabel = baseLabelObj ? translateSchema(baseLabelObj) : undefined;
 
-		// Build config items for the summary view
 		let configItems: Array<{ key: string; label: string; value: unknown }> = [];
 		if (Array.isArray(configs)) {
 			configItems = configs.map((entry: unknown, idx: number) => ({
@@ -135,10 +158,15 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 				value: entry,
 			}));
 		} else if (configs && typeof configs === 'object') {
+			const fallbackConfigLabel = translation.settings.configSection.getTrans();
 			configItems = Object.keys(configs).map((key) => {
-				const labelObj = schema?.definition?.[key]?.label;
+				const labelObj = getBaseConfigDefinitionLabel(schema, key);
 				const localized = labelObj ? translateSchema(labelObj) : undefined;
-				return { key, label: localized ?? key, value: configs[key] };
+				return {
+					key,
+					label: resolveBaseConfigLabel(key, localized, fallbackConfigLabel),
+					value: configs[key],
+				};
 			});
 		}
 
@@ -148,7 +176,7 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 					stage={stage}
 					preload={preload}
 					onOpen={this.openEdit}
-					totalResources={resources?.length ?? 0}
+					resources={resources ?? []}
 					configList={configItems}
 					onOpenConfig={(key) => this.openConfig(key)}
 					baseLabel={baseLabel}
@@ -159,9 +187,7 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 							className="modal show d-block"
 							role="dialog"
 							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeEdit();
-								}
+								if (e.target === e.currentTarget) this.closeEdit();
 							}}
 						>
 							<div
@@ -176,25 +202,20 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 									schemaSection="definition"
 									onUpdate={this.handleUpdate}
 									onClose={this.closeEdit}
-									formContext={{
-										sourceOptions: sourceOptions,
-										resources: resources,
-									}}
+									formContext={{ sourceOptions, resources }}
 								/>
 							</div>
 						</div>
 						<div className="modal-backdrop show" />
 					</>
 				)}
-				{this.state.configEditKey && (
+				{hasBaseConfigEditKey(this.state.configEditKey) && (
 					<>
 						<div
 							className="modal show d-block"
 							role="dialog"
 							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.setState({ configEditKey: undefined });
-								}
+								if (e.target === e.currentTarget) this.setState({ configEditKey: undefined });
 							}}
 						>
 							<div
@@ -205,7 +226,7 @@ export class BaseSettings extends React.PureComponent<BaseSettingsRJSFProps, Bas
 								<RJSFConfigsPanel
 									configs={editor.getEventsJson()?.config.configs}
 									configKey={this.state.configEditKey}
-									schema={schema}
+									schema={resolveBaseConfigSchema(schema, this.state.configEditKey)}
 									onUpdate={this.handleConfigPatch}
 									onClose={() => this.setState({ configEditKey: undefined })}
 								/>

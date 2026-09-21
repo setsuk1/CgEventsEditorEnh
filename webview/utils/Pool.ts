@@ -35,22 +35,20 @@ export class Pool<T> {
 
     public getInstance(): T {
         if (this._released.size) {
-            for (let obj of this._released.values()) {
+            for (const obj of this._released.values()) {
                 this._active.add(obj);
                 this._released.delete(obj);
                 return obj;
             }
         }
 
-        let newObj = new this._targetClass();
+        const newObj = new this._targetClass();
         this._active.add(newObj);
         return newObj;
     }
 
     public releaseInstance(obj: T): boolean {
-        let check = this._active.has(obj);
-        if (!check) {
-            console.error("This object is not in this pool");
+        if (!this._active.has(obj)) {
             return false;
         }
 
@@ -66,6 +64,7 @@ export class Pool<T> {
     }
 
     public clearDown(): void {
+        this._recycledCount = 0;
         if (!this._released.size) {
             return;
         }
@@ -75,14 +74,12 @@ export class Pool<T> {
             return;
         }
 
-        for (let obj of this._released.values()) {
+        for (const obj of this._released.values()) {
             this._released.delete(obj);
             recycleCounts--;
             if (!recycleCounts) {
                 break;
             }
         }
-
-        this._recycledCount = 0;
     }
 }

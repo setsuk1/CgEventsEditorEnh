@@ -43,7 +43,19 @@ export class EventCardUiStateStore {
 
 	setBlockCollapsedMap(eventId: string, blockCollapsed: Record<EventBlockType, boolean>): void {
 		const state = this.ensure(eventId);
-		state.blockCollapsed = blockCollapsed;
+		state.blockCollapsed = { ...blockCollapsed };
+	}
+
+	rename(previousEventId: string, nextEventId: string): void {
+		if (!previousEventId || !nextEventId || previousEventId === nextEventId) {
+			return;
+		}
+		const state = this.stateById.get(previousEventId);
+		if (!state) {
+			return;
+		}
+		this.stateById.delete(previousEventId);
+		this.stateById.set(nextEventId, state);
 	}
 
 	prune(validIds: string[]): void {

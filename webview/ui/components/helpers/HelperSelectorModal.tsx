@@ -1,6 +1,6 @@
 import React from 'react';
 import { translation } from '../../../trans/Trans';
-import { HelperInfo } from '../inputs/PropertyElement';
+import type { HelperInfo } from './HelperInfo';
 import { HelperViewer } from './HelperViewer';
 import { SelectorPanel } from './SelectorPanel';
 

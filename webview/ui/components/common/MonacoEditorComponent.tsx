@@ -1,6 +1,12 @@
-import Editor, { OnMount } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
+import type { OnMount } from '@monaco-editor/react';
+import type * as Monaco from 'monaco-editor';
 import React from 'react';
+import { flushSync } from 'react-dom';
+import {
+	getMonacoContainerClassNames,
+	getMonacoEditorOptions,
+	resolveMonacoTheme,
+} from './MonacoEditorData';
 
 interface MonacoEditorComponentProps {
 	value: string;
@@ -12,209 +18,195 @@ interface MonacoEditorComponentProps {
 	fill?: boolean;
 }
 
+type MonacoReactModule = typeof import('@monaco-editor/react');
+type MonacoApi = typeof import('monaco-editor');
+
+interface MonacoEditorComponentState {
+	EditorComponent?: MonacoReactModule['default'];
+	loadFailed: boolean;
+}
+
 /**
- * Monaco Editor wrapper for JSON editing with VSCode integration
+ * Monaco Editor wrapper for JSON editing with VSCode integration.
+ * The Monaco runtime is loaded only when an editor is actually mounted.
  */
-export class MonacoEditorComponent extends React.PureComponent<MonacoEditorComponentProps> {
-	private editor: monaco.editor.IStandaloneCodeEditor | null = null;
+export class MonacoEditorComponent extends React.PureComponent<MonacoEditorComponentProps, MonacoEditorComponentState> {
+	private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
+	private monacoApi: MonacoApi | null = null;
 	private changeTimeout: NodeJS.Timeout | null = null;
-	private clipboardDisposables: monaco.IDisposable[] = [];
-	// Track editor value so we can ignore parent echoes and avoid re-rendering Monaco.
+	private editorDisposables: Monaco.IDisposable[] = [];
+	private themeObserver: MutationObserver | null = null;
 	private internalValue: string;
+	private disposed = false;
 
 	constructor(props: MonacoEditorComponentProps) {
 		super(props);
 		this.internalValue = props.value;
+		this.state = {
+			EditorComponent: undefined,
+			loadFailed: false,
+		};
 	}
 
-	shouldComponentUpdate(nextProps: MonacoEditorComponentProps): boolean {
+	componentDidMount(): void {
+		void this.loadEditorRuntime();
+	}
+
+	public getValue(): string {
+		return this.internalValue;
+	}
+
+	shouldComponentUpdate(nextProps: MonacoEditorComponentProps, nextState: MonacoEditorComponentState): boolean {
+		if (nextState.EditorComponent !== this.state.EditorComponent || nextState.loadFailed !== this.state.loadFailed) return true;
 		if (nextProps.error !== this.props.error) return true;
 		if (nextProps.className !== this.props.className) return true;
 		if (nextProps.compact !== this.props.compact) return true;
 		if (nextProps.fill !== this.props.fill) return true;
-
 		if (nextProps.value !== this.props.value) {
 			return nextProps.value !== this.internalValue;
 		}
-
 		return false;
 	}
 
 	componentDidUpdate(prevProps: MonacoEditorComponentProps): void {
-		// Update editor content if value prop changes from external source
 		if (prevProps.value !== this.props.value && this.props.value !== this.internalValue) {
 			this.internalValue = this.props.value;
 			if (this.editor) {
 				const currentPosition = this.editor.getPosition();
 				this.editor.setValue(this.props.value);
-				if (currentPosition) {
-					this.editor.setPosition(currentPosition);
-				}
+				if (currentPosition) this.editor.setPosition(currentPosition);
 			}
 		}
 	}
 
 	componentWillUnmount(): void {
-		if (this.changeTimeout) {
-			clearTimeout(this.changeTimeout);
-		}
-		this.clipboardDisposables.forEach((disposable) => disposable.dispose());
-		this.clipboardDisposables = [];
-		if (this.editor) {
-			this.editor.dispose();
+		this.disposed = true;
+		this.flushPendingChange(false);
+		this.themeObserver?.disconnect();
+		this.themeObserver = null;
+		this.editorDisposables.forEach((disposable) => disposable.dispose());
+		this.editorDisposables = [];
+		this.editor?.dispose();
+		this.editor = null;
+		this.monacoApi = null;
+	}
+
+	private async loadEditorRuntime(): Promise<void> {
+		try {
+			const [monacoReact, monacoApi] = await Promise.all([
+				import('@monaco-editor/react'),
+				import('monaco-editor'),
+			]);
+			if (this.disposed) return;
+			monacoReact.loader.config({ monaco: monacoApi });
+			this.monacoApi = monacoApi;
+			this.setState({ EditorComponent: monacoReact.default, loadFailed: false });
+		} catch (error) {
+			if (this.disposed) return;
+			console.error('Failed to load Monaco editor:', error);
+			this.setState({ loadFailed: true });
 		}
 	}
 
-	private handleEditorDidMount: OnMount = (editor, monaco) => {
-		this.editor = editor;
-		this.internalValue = this.props.value;
+	private flushPendingChange(synchronous = true): void {
+		if (!this.changeTimeout) return;
+		clearTimeout(this.changeTimeout);
+		this.changeTimeout = null;
+		const notifyChange = () => this.props.onChange(this.internalValue);
+		if (synchronous) {
+			flushSync(notifyChange);
+		} else {
+			// Preserve the last debounced draft without imposing commit/history semantics.
+			notifyChange();
+		}
+	}
 
-		// Configure Monaco for VSCode webview context
-		monaco.editor.defineTheme('vscode-dark-custom', {
-			base: 'vs-dark',
-			inherit: true,
-			rules: [],
-			colors: {
-				'editor.background': '#1e1e1e',
-				'editor.foreground': '#d4d4d4',
-				'editorLineNumber.foreground': '#858585',
-				'editorLineNumber.activeForeground': '#c6c6c6',
-				'editor.selectionBackground': '#264f78',
-				'editor.inactiveSelectionBackground': '#3a3d41',
-			},
+	private syncTheme = (): void => {
+		this.monacoApi?.editor.setTheme(resolveMonacoTheme(document.body.classList));
+	};
+
+	private handleEditorDidMount: OnMount = (editor, monacoApi) => {
+		this.editor = editor;
+		this.monacoApi = monacoApi;
+		this.internalValue = this.props.value;
+		this.syncTheme();
+		this.themeObserver = new MutationObserver(this.syncTheme);
+		this.themeObserver.observe(document.body, {
+			attributes: true,
+			attributeFilter: ['class'],
 		});
 
-		monaco.editor.setTheme('vscode-dark-custom');
-
-		// Configure JSON language settings
-		monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+		monacoApi.languages.json.jsonDefaults.setDiagnosticsOptions({
 			validate: true,
 			allowComments: false,
 			schemas: [],
 			enableSchemaRequest: false,
 		});
 
-		// Set initial value
-		editor.setValue(this.props.value);
-
-		// Focus editor
 		editor.focus();
-
 		const defaultPasteAction = editor.getAction('editor.action.clipboardPasteAction');
-		const pasteOverride = monaco.editor.registerCommand('editor.action.clipboardPasteAction', async () => {
-			let text = '';
-			if (navigator?.clipboard?.readText) {
-				try {
-					text = await navigator.clipboard.readText();
-				} catch {
-					text = '';
+		editor.addCommand(
+			monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.KeyV,
+			async () => {
+				let text = '';
+				if (navigator.clipboard?.readText) {
+					try {
+						text = await navigator.clipboard.readText();
+					} catch {
+						text = '';
+					}
 				}
-			}
-			if (!text) {
-				if (defaultPasteAction) {
-					await defaultPasteAction.run();
+				if (this.disposed || this.editor !== editor) return;
+				if (!text) {
+					await defaultPasteAction?.run();
+					return;
 				}
-				return;
-			}
-			editor.pushUndoStop();
-			editor.trigger('keyboard', 'type', { text });
-			editor.pushUndoStop();
-		});
-
-		const keybindings = monaco.editor.addKeybindingRules([
-			{
-				keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX,
-				command: 'editor.action.clipboardCutAction',
-				when: 'textInputFocus',
+				editor.pushUndoStop();
+				editor.trigger('keyboard', 'type', { text });
+				editor.pushUndoStop();
 			},
-			{
-				keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC,
-				command: 'editor.action.clipboardCopyAction',
-				when: 'textInputFocus',
-			},
-			{
-				keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV,
-				command: 'editor.action.clipboardPasteAction',
-				when: 'textInputFocus',
-			},
-		]);
+			'textInputFocus'
+		);
 
-		this.clipboardDisposables.push(pasteOverride, keybindings);
-
-		const blurDisposable = editor.onDidBlurEditorText(() => {
-			if (this.props.onCommit) {
-				this.props.onCommit(this.internalValue);
-			}
-		});
-		this.clipboardDisposables.push(blurDisposable);
+		this.editorDisposables.push(editor.onDidBlurEditorText(() => {
+			this.flushPendingChange();
+			this.props.onCommit?.(this.internalValue);
+		}));
 	};
 
 	private handleEditorChange = (value: string | undefined) => {
-		const newValue = value ?? '';
-		this.internalValue = newValue;
-
-		// Debounce the onChange callback to avoid excessive updates
-		if (this.changeTimeout) {
-			clearTimeout(this.changeTimeout);
-		}
-
+		this.internalValue = value ?? '';
+		if (this.changeTimeout) clearTimeout(this.changeTimeout);
 		this.changeTimeout = setTimeout(() => {
-			this.props.onChange(newValue);
+			this.changeTimeout = null;
+			this.props.onChange(this.internalValue);
 		}, 300);
 	};
 
 	render() {
 		const { error, className, compact, fill } = this.props;
-		const rootClassName = [
-			'd-flex',
-			'flex-column',
-			'gap-2',
-			'w-100',
-			'cgenh-json-editor',
-			fill ? 'flex-grow-1 min-h-0' : '',
-			className ?? '',
-		].filter(Boolean).join(' ');
-		const wrapperClassName = [
-			'border',
-			'rounded',
-			'overflow-hidden',
-			fill ? 'flex-grow-1 cgenh-monaco-wrapper--fill' : compact ? 'cgenh-monaco-wrapper--compact' : 'cgenh-monaco-wrapper--default',
-		].filter(Boolean).join(' ');
+		const { EditorComponent, loadFailed } = this.state;
+		const { rootClassName, wrapperClassName } = getMonacoContainerClassNames({
+			className,
+			compact,
+			fill,
+		});
 
 		return (
 			<div className={rootClassName}>
 				<div className={wrapperClassName}>
-					<Editor
-						height="100%"
-						defaultLanguage="json"
-						value={this.props.value}
-						onChange={this.handleEditorChange}
-						onMount={this.handleEditorDidMount}
-						options={{
-							minimap: { enabled: !compact },
-							scrollBeyondLastLine: false,
-							fontSize: 14,
-							lineNumbers: 'on',
-							renderWhitespace: 'selection',
-							tabSize: 2,
-							insertSpaces: true,
-							automaticLayout: true,
-							formatOnPaste: true,
-							formatOnType: true,
-							wordWrap: 'on',
-							wrappingIndent: 'indent',
-							folding: true,
-							foldingStrategy: 'indentation',
-							showFoldingControls: 'always',
-							matchBrackets: 'always',
-							autoClosingBrackets: 'always',
-							autoClosingQuotes: 'always',
-							suggest: {
-								showKeywords: true,
-								showSnippets: true,
-							},
-						}}
-					/>
+					{EditorComponent ? (
+						<EditorComponent
+							height="100%"
+							defaultLanguage="json"
+							value={this.props.value}
+							onChange={this.handleEditorChange}
+							onMount={this.handleEditorDidMount}
+							options={getMonacoEditorOptions(Boolean(compact))}
+						/>
+					) : (
+						<div className="d-flex align-items-center justify-content-center h-100" aria-busy={!loadFailed} />
+					)}
 				</div>
 				{error && (
 					<div className="alert alert-danger py-1 mb-0" role="alert">

@@ -1,6 +1,4 @@
 const esbuild = require("esbuild");
-const fs = require("fs");
-const path = require("path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -25,6 +23,20 @@ const esbuildProblemMatcherPlugin = {
 	},
 };
 
+const webviewLoader = {
+	'.css': 'css',
+	'.svg': 'dataurl',
+	'.png': 'dataurl',
+	'.jpg': 'dataurl',
+	'.jpeg': 'dataurl',
+	'.woff': 'dataurl',
+	'.woff2': 'dataurl',
+	'.ttf': 'dataurl',
+	'.eot': 'dataurl',
+	'.gif': 'dataurl',
+	'.mp3': 'dataurl',
+};
+
 async function createExtensionContext() {
 	return esbuild.context({
 		entryPoints: ['src/extension.ts'],
@@ -37,77 +49,46 @@ async function createExtensionContext() {
 		outfile: 'dist/src/extension.js',
 		external: ['vscode'],
 		logLevel: 'silent',
-		plugins: [
-			/* add to the end of plugins array */
-			esbuildProblemMatcherPlugin,
-		],
+		plugins: [esbuildProblemMatcherPlugin],
 	});
 }
 
-/**
- * Plugin to copy Monaco Editor worker files from esm build
- */
-const monacoEditorPlugin = {
-	name: 'monaco-editor',
-	setup(build) {
-		build.onEnd(() => {
-			// Copy Monaco Editor workers from esm to dist
-			const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'esm', 'vs');
-			const monacoDest = path.join(__dirname, 'dist', 'webview', 'monaco-workers');
-
-			if (!fs.existsSync(monacoDest)) {
-				fs.mkdirSync(monacoDest, { recursive: true });
-			}
-
-			// Copy worker files
-			const workerFiles = [
-				'editor/editor.worker.js',
-				'language/json/json.worker.js',
-			];
-
-			workerFiles.forEach(file => {
-				const src = path.join(monacoSrc, file);
-				const dest = path.join(monacoDest, path.basename(file));
-
-				if (fs.existsSync(src)) {
-					fs.copyFileSync(src, dest);
-					console.log(`[monaco] Copied ${path.basename(file)}`);
-				} else {
-					console.warn(`[monaco] Warning: ${file} not found`);
-				}
-			});
-		});
-	},
-};
-
 async function createWebviewContext() {
 	return esbuild.context({
-		entryPoints: ['webview/index.ts'],
+		entryPoints: { index: 'webview/index.ts' },
+		bundle: true,
+		format: 'esm',
+		splitting: true,
+		minify: production,
+		sourcemap: !production,
+		platform: 'browser',
+		target: ['chrome100', 'edge100'],
+		outdir: 'dist/webview',
+		entryNames: '[name]',
+		chunkNames: 'chunks/[name]-[hash]',
+		logLevel: 'silent',
+		loader: webviewLoader,
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+}
+
+async function createMonacoWorkersContext() {
+	return esbuild.context({
+		entryPoints: {
+			'monaco-workers/editor.worker': 'node_modules/monaco-editor/esm/vs/editor/editor.worker.js',
+			'monaco-workers/json.worker': 'node_modules/monaco-editor/esm/vs/language/json/json.worker.js',
+		},
 		bundle: true,
 		format: 'iife',
 		minify: production,
 		sourcemap: !production,
 		platform: 'browser',
 		target: ['chrome100', 'edge100'],
-		outfile: 'dist/webview/index.js',
+		outdir: 'dist/webview',
+		entryNames: '[name]',
 		logLevel: 'silent',
-		loader: {
-			'.css': 'css',
-			'.svg': 'dataurl',
-			'.png': 'dataurl',
-			'.jpg': 'dataurl',
-			'.jpeg': 'dataurl',
-			'.woff': 'dataurl',
-			'.woff2': 'dataurl',
-			'.ttf': 'dataurl',
-			'.eot': 'dataurl',
-			'.gif': 'dataurl',
-			'.mp3': 'dataurl',
-		},
-		plugins: [
-			monacoEditorPlugin,
-			esbuildProblemMatcherPlugin,
-		],
+		loader: webviewLoader,
+		plugins: [esbuildProblemMatcherPlugin],
 	});
 }
 
@@ -115,6 +96,7 @@ async function main() {
 	const contexts = await Promise.all([
 		createExtensionContext(),
 		createWebviewContext(),
+		createMonacoWorkersContext(),
 	]);
 	if (watch) {
 		await Promise.all(contexts.map((ctx) => ctx.watch()));

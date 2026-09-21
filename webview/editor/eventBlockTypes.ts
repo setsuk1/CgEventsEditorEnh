@@ -2,8 +2,8 @@ export const eventBlockTypes = ['trigger', 'check', 'action'] as const;
 
 export type EventBlockType = typeof eventBlockTypes[number];
 
-export function isEventBlockType(value: any): value is EventBlockType {
-    return eventBlockTypes.includes(value);
+export function isEventBlockType(value: unknown): value is EventBlockType {
+    return typeof value === 'string' && eventBlockTypes.some((blockType) => blockType === value);
 }
 
 export const ebtConv = {
@@ -33,3 +33,5 @@ export const ebtConv = {
         action: 'Actions'
     }
 } as const;
+
+export type LogicBlockKey = (typeof ebtConv.COMPLEX)[EventBlockType];

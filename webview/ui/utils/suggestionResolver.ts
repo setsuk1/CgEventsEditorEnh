@@ -1,60 +1,83 @@
 import { ICgAppInfo, ICgEvent, ICgEventsSchema, ICgItemInfoList, LANG, translateSchema } from '@shared';
 import { Key } from '../../../shared/keyboard/Key';
+import { getOwnPropertyValue } from '../../utils/ownPath';
+import { createSafeRecord } from './safeRecord';
 
-function parseDynamicQuery(query: string): { scope: string; args: string[] } | null {
-	const match = query.match(/^(\w+)<([^>]*)>$/);
+const DYNAMIC_QUERY_RE = /^(\w+)<([^>]*)>$/;
+const SUPPORTED_DYNAMIC_SCOPES = new Set(['actions', 'checks', 'triggers', 'events', 'resources', 'sources', 'server', 'locale', 'keyboard']);
+
+interface DynamicSuggestionQuery {
+	scope: string;
+	args: string[];
+}
+
+function parseDynamicQuery(query: string): DynamicSuggestionQuery | null {
+	const match = DYNAMIC_QUERY_RE.exec(query);
 	if (!match) {
 		return null;
 	}
-
 	const [, scope, rawArgs] = match;
 	const args = rawArgs
 		.split(',')
 		.map((s) => s.trim())
 		.filter(Boolean);
-
 	return { scope, args };
 }
 
+function parseSupportedDynamicQuery(value: unknown): DynamicSuggestionQuery | null {
+	if (typeof value !== 'string') return null;
+	const parsed = parseDynamicQuery(value);
+	return parsed && SUPPORTED_DYNAMIC_SCOPES.has(parsed.scope) ? parsed : null;
+}
+
+export function normalizeSuggestionTitles(value: unknown): Record<string, string[]> {
+	const result = createSafeRecord<string[]>();
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+	for (const [key, entry] of Object.entries(value)) {
+		if (Array.isArray(entry) && entry.every((item) => typeof item === 'string')) {
+			result[key] = entry;
+		}
+	}
+	return result;
+}
+
+function resolveSuggestionTitles(value: unknown): string[] {
+	const titlesByLang = normalizeSuggestionTitles(value);
+	if (Object.keys(titlesByLang).length === 0) return [];
+	const translated = translateSchema(titlesByLang);
+	return Array.isArray(translated) ? translated : [];
+}
+
 function addSuggestionValue(values: Set<string>, raw: unknown): void {
-	if (raw === undefined || raw === null) { return; }
+	if (raw === undefined || raw === null) return;
 	if (Array.isArray(raw)) {
-		raw.forEach((v) => addSuggestionValue(values, v));
+		raw.forEach((value) => addSuggestionValue(values, value));
 		return;
 	}
-	if (typeof raw === 'object') { return; }
+	if (typeof raw === 'object') return;
 	values.add(String(raw));
 }
 
 function joinResourcePath(resourceName: string, filename: string): string {
-	const base = String(resourceName ?? '')
-		.replace(/\\/g, '/')
-		.replace(/\/+$/g, '');
-	const file = String(filename ?? '')
-		.replace(/\\/g, '/')
-		.replace(/^\.?\//g, '')
-		.replace(/\/+$/g, '');
-
-	if (!base) { return file; }
-	if (!file) { return base; }
-	if (file.toLowerCase().startsWith(`${base.toLowerCase()}/`)) { return file; }
+	const base = String(resourceName ?? '').replace(/\\/g, '/').replace(/\/+$/g, '');
+	const file = String(filename ?? '').replace(/\\/g, '/').replace(/^\.?\//g, '').replace(/\/+$/g, '');
+	if (!base) return file;
+	if (!file) return base;
+	if (file.toLowerCase().startsWith(`${base.toLowerCase()}/`)) return file;
 	return `${base}/${file}`.replace(/\/{2,}/g, '/');
 }
 
 function resolveLocaleSuggestions(args: string[]): Array<{ value: string; label: string }> {
-	const wantsAll = args.length === 0 || args.some((a) => a.trim() === '*');
-	const wantedCodes = new Set(args.map((a) => a.trim().toLowerCase()).filter(Boolean));
+	const wantsAll = args.length === 0 || args.some((arg) => arg.trim() === '*');
+	const wantedCodes = new Set(args.map((arg) => arg.trim().toLowerCase()).filter(Boolean));
 	const byCode = new Map<string, string>();
 
 	Object.values(LANG).forEach((entry) => {
-		if (!entry || typeof entry !== 'object') {return;}
+		if (!entry || typeof entry !== 'object') return;
 		const code = typeof entry.code === 'string' ? entry.code : '';
-		if (!code) {return;}
-		if (!wantsAll && !wantedCodes.has(code.toLowerCase())) {return;}
+		if (!code || (!wantsAll && !wantedCodes.has(code.toLowerCase()))) return;
 		const nativeName = typeof entry.nativeName === 'string' && entry.nativeName.trim() ? entry.nativeName : code;
-		if (!byCode.has(code)) {
-			byCode.set(code, nativeName);
-		}
+		if (!byCode.has(code)) byCode.set(code, nativeName);
 	});
 
 	return Array.from(byCode.entries())
@@ -63,172 +86,105 @@ function resolveLocaleSuggestions(args: string[]): Array<{ value: string; label:
 }
 
 function resolveKeyboardSuggestions(args: string[]): Array<{ value: string; label: string }> {
-	const wantsAll = args.length === 0 || args.some((a) => a.trim() === '*');
-	const wantedKeys = wantsAll
-		? undefined
-		: new Set(args.map((a) => a.trim().toUpperCase()).filter(Boolean));
-
+	const wantsAll = args.length === 0 || args.some((arg) => arg.trim() === '*');
+	const wantedKeys = wantsAll ? undefined : new Set(args.map((arg) => arg.trim().toUpperCase()).filter(Boolean));
 	const suggestions: Array<{ value: string; label: string }> = [];
 	const seenValues = new Set<string>();
 
 	for (const [rawName, rawCode] of Object.entries(Key)) {
 		const name = String(rawName ?? '').trim();
-		if (!name) {
-			continue;
-		}
-		if (wantedKeys && !wantedKeys.has(name.toUpperCase())) {
-			continue;
-		}
-
+		if (!name || (wantedKeys && !wantedKeys.has(name.toUpperCase()))) continue;
 		const value = String(rawCode ?? '').trim();
-		if (!value || seenValues.has(value)) {
-			continue;
-		}
+		if (!value || seenValues.has(value)) continue;
 		seenValues.add(value);
-
-		const label = name.startsWith('_') ? name.slice(1) : name;
-		suggestions.push({ value, label });
+		suggestions.push({ value, label: name.startsWith('_') ? name.slice(1) : name });
 	}
 
 	suggestions.sort((a, b) => a.label.localeCompare(b.label));
 	return suggestions;
 }
 
-/**
- * Resolves a dynamic suggestion query by finding all unique values for a given key
- * within the specified scope (e.g., all 'actions') in the current event document.
- * @param query The suggestion query string, e.g., 'actions<actorCode>'.
- * @param document The entire event document currently being edited.
- * @param items The server items list.
- * @param cgapp The server app info (includes resources types).
- * @param resources A list of all available resource names.
- * @param sources A list of all available source names.
- * @returns An array of unique string values.
- */
 function resolveDynamicQuery(
-	query: string,
+	query: DynamicSuggestionQuery,
 	events: ICgEvent[] | undefined,
 	items: ICgItemInfoList | undefined,
 	cgapp: ICgAppInfo | undefined,
 	resources: string[] | undefined,
 	sources: string[] | undefined
 ): string[] {
-	const parsed = parseDynamicQuery(query);
-	if (!parsed) {
-		return [];
-	}
-
-	const { scope, args } = parsed;
+	const { scope, args } = query;
 	const values = new Set<string>();
 	const eventList = Array.isArray(events) ? events : [];
 
 	if (eventList.length > 0 && (scope === 'actions' || scope === 'checks' || scope === 'triggers')) {
-		if (args.length === 0) {
-			return [];
-		}
-		eventList.forEach((event) => {
+		if (args.length === 0) return [];
+		for (const event of eventList) {
 			const blocks = event[scope];
-			if (blocks && Array.isArray(blocks)) {
-				blocks.forEach((block) => {
-					if (block.data && typeof block.data === 'object' && !Array.isArray(block.data)) {
-						args.forEach((key) => addSuggestionValue(values, block.data[key]));
-					}
-				});
+			if (!Array.isArray(blocks)) continue;
+			for (const block of blocks) {
+				if (!block.data || typeof block.data !== 'object' || Array.isArray(block.data)) continue;
+				for (const key of args) addSuggestionValue(values, getOwnPropertyValue(block.data, key));
 			}
-		});
-	} else if (eventList.length > 0 && scope === 'events') {
-		if (args.length === 0) {
-			return [];
 		}
-		eventList.forEach((event) => {
-			args.forEach((key) => addSuggestionValue(values, event[key]));
-		});
+	} else if (eventList.length > 0 && scope === 'events') {
+		if (args.length === 0) return [];
+		for (const event of eventList) {
+			for (const key of args) addSuggestionValue(values, getOwnPropertyValue(event, key));
+		}
 	} else if (scope === 'server') {
-		const wantsItemCode = args.some((k) => k.toLowerCase() === 'itemcode');
-		if (wantsItemCode && items?.list) {
-			items.list.forEach((item) => addSuggestionValue(values, item.code));
+		if (args.some((key) => key.toLowerCase() === 'itemcode') && items?.list) {
+			for (const item of items.list) addSuggestionValue(values, item.code);
 		}
 	} else if (scope === 'resources') {
-		if (!resources) {
-			return [];
-		}
-
-		const wantsAll = args.length === 0 || args.some((k) => k.toLowerCase() === 'key');
+		if (!resources) return [];
+		const wantsAll = args.length === 0 || args.some((key) => key.toLowerCase() === 'key');
 		if (wantsAll || !cgapp?.appResourcePack) {
-			resources.forEach((r) => values.add(r));
+			resources.forEach((resource) => values.add(resource));
 		} else {
-			const allowedTypes = new Set(args.map((t) => t.toLowerCase()));
+			const allowedTypes = new Set(args.map((type) => type.toLowerCase()));
 			const { aliasMap, resourceMap } = cgapp.appResourcePack;
-			resources.forEach((alias) => {
-				const id = aliasMap?.[alias]?.resourceId;
-				const type = resourceMap?.[id]?.type;
-				if (type.toLowerCase() === 'soundpack' && allowedTypes.has('sound')) {
-					const sounds = resourceMap?.[id]?.meta?.sounds;
+			for (const alias of resources) {
+				const resourceId = aliasMap[alias]?.resourceId;
+				const resource = resourceId === undefined ? undefined : resourceMap[resourceId];
+				const type = resource?.type?.toLowerCase();
+				if (type === 'soundpack' && allowedTypes.has('sound')) {
+					const sounds = resource.meta?.sounds;
 					if (Array.isArray(sounds)) {
-						sounds.forEach((entry) => {
+						for (const entry of sounds) {
 							if (typeof entry === 'string') {
 								values.add(joinResourcePath(alias, entry));
-								return;
-							}
-							if (entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.filename === 'string') {
+							} else if (entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.filename === 'string') {
 								values.add(joinResourcePath(alias, entry.filename));
 							}
-						});
+						}
 					}
-					return;
+					continue;
 				}
-
-				if (!type || !allowedTypes.has(type.toLowerCase())) {
-					return;
-				}
-
-				values.add(alias);
-			});
+				if (type && allowedTypes.has(type)) values.add(alias);
+			}
 		}
 	} else if (scope === 'sources') {
-		if (!sources) {
-			return [];
-		}
-
-		const wantsAll = args.length === 0 || args.some((k) => k.toLowerCase() === 'key');
+		if (!sources) return [];
+		const wantsAll = args.length === 0 || args.some((key) => key.toLowerCase() === 'key');
 		if (wantsAll) {
-			sources.forEach((s) => values.add(s));
+			sources.forEach((source) => values.add(source));
 		} else {
 			const exts = args
-				.map((t) => t.trim().toLowerCase())
+				.map((type) => type.trim().toLowerCase())
 				.filter(Boolean)
-				.map((t) => (t.startsWith('.') ? t.slice(1) : t));
-			sources.forEach((s) => {
-				const lower = s.toLowerCase();
-				if (exts.some((ext) => lower.endsWith(`.${ext}`))) {
-					values.add(s);
-				}
-			});
+				.map((type) => type.startsWith('.') ? type.slice(1) : type);
+			for (const source of sources) {
+				const lower = source.toLowerCase();
+				if (exts.some((ext) => lower.endsWith(`.${ext}`))) values.add(source);
+			}
 		}
 	}
 
-	let result = Array.from(values);
-
-	// Only sort if the scope is not resources or sources
-	if (scope !== 'resources' && scope !== 'sources') {
-		result.sort();
-	}
-
+	const result = Array.from(values);
+	if (scope !== 'resources' && scope !== 'sources') result.sort();
 	return result;
 }
 
-/**
- * Resolves static or dynamic suggestions into a unified format.
- * @param suggest The `suggest` array from the schema property.
- * @param suggestTitles The `suggestTitles` object from the schema property.
- * @param schema The cgenh-full events schema.
- * @param events The events list, required for data-dependent dynamic queries.
- * @param items The server items list.
- * @param cgapp The server app info (includes resources types).
- * @param resources A list of all available resource names.
- * @param sources A list of all available source names.
- * @returns An array of suggestion objects with `value` and `label`.
- */
 export function resolveSuggestions(
 	suggest: any[] | undefined,
 	suggestTitles: Record<string, unknown> | undefined,
@@ -239,106 +195,65 @@ export function resolveSuggestions(
 	resources: string[] | undefined,
 	sources: string[] | undefined
 ): Array<{ value: string; label: string }> {
-	if (!suggest || suggest.length === 0) {
-		return [];
-	}
+	void schema;
+	if (!suggest?.length) return [];
 
-	let titles: string[] = [];
-	if (suggestTitles && typeof suggestTitles === 'object' && !Array.isArray(suggestTitles)) {
-		const titlesByLang: Record<string, string[]> = {};
-		for (const [key, value] of Object.entries(suggestTitles)) {
-			if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
-				titlesByLang[key] = value;
-			}
-		}
-		if (Object.keys(titlesByLang).length > 0) {
-			const rawTitles = translateSchema(titlesByLang);
-			if (Array.isArray(rawTitles)) {
-				titles = rawTitles;
-			}
-		}
-	}
-	const supportedDynamicScopes = new Set(['actions', 'checks', 'triggers', 'events', 'resources', 'sources', 'server', 'locale', 'keyboard']);
+	const titles = resolveSuggestionTitles(suggestTitles);
 
-	const staticCount = suggest.reduce((count, entry) => {
-		if (typeof entry !== 'string') { return count + 1; }
-		const parsed = parseDynamicQuery(entry);
-		if (parsed && supportedDynamicScopes.has(parsed.scope)) {
-			return count;
-		}
-		return count + 1;
-	}, 0);
-
+	const parsedDynamicQueries = suggest.map((entry) => parseSupportedDynamicQuery(entry));
+	const staticCount = parsedDynamicQueries.reduce(
+		(count, parsed) => count + (parsed ? 0 : 1),
+		0,
+	);
 	const titlesUseIndex = titles.length >= suggest.length || titles.length > staticCount;
-
 	const staticSuggestions: Array<{ value: string; label: string }> = [];
-	const dynamicQueries: string[] = [];
+	const dynamicQueries: DynamicSuggestionQuery[] = [];
 	let staticTitleIndex = 0;
 
 	suggest.forEach((entry, index) => {
-		if (typeof entry === 'string') {
-			const parsed = parseDynamicQuery(entry);
-			if (parsed && supportedDynamicScopes.has(parsed.scope)) {
-				dynamicQueries.push(entry);
-				return;
-			}
+		const parsed = parsedDynamicQueries[index];
+		if (parsed) {
+			dynamicQueries.push(parsed);
+			return;
 		}
-
-		const strValue = String(entry);
-		const label = titlesUseIndex ? (titles[index] ?? strValue) : (titles[staticTitleIndex] ?? strValue);
+		const value = String(entry);
+		const label = titlesUseIndex ? (titles[index] ?? value) : (titles[staticTitleIndex] ?? value);
 		staticTitleIndex += 1;
-		staticSuggestions.push({ value: strValue, label });
+		staticSuggestions.push({ value, label });
 	});
 
-	if (dynamicQueries.length === 0) {
-		return staticSuggestions;
-	}
+	if (dynamicQueries.length === 0) return staticSuggestions;
 
-	const existing = new Set(staticSuggestions.map((s) => s.value));
+	const existing = new Set(staticSuggestions.map((suggestion) => suggestion.value));
 	const dynamicSuggestions: Array<{ value: string; label: string }> = [];
 	const dynamicSeen = new Set<string>();
-	dynamicQueries.forEach((query) => {
-		const parsed = parseDynamicQuery(query);
-		if (parsed?.scope === 'locale') {
-			resolveLocaleSuggestions(parsed.args).forEach((s) => {
-				if (existing.has(s.value) || dynamicSeen.has(s.value)) {return;}
-				dynamicSeen.add(s.value);
-				dynamicSuggestions.push(s);
-			});
-			return;
-		}
+	const pushUnique = (value: string, label = value) => {
+		if (!value || existing.has(value) || dynamicSeen.has(value)) return;
+		dynamicSeen.add(value);
+		dynamicSuggestions.push({ value, label });
+	};
 
-		if (parsed?.scope === 'server') {
-			const wantsItemCode = parsed.args.some((k) => k.toLowerCase() === 'itemcode');
-			if (wantsItemCode && items?.list) {
-				items.list.forEach((item) => {
+	for (const parsed of dynamicQueries) {
+		if (parsed.scope === 'locale') {
+			resolveLocaleSuggestions(parsed.args).forEach((suggestion) => pushUnique(suggestion.value, suggestion.label));
+			continue;
+		}
+		if (parsed.scope === 'server') {
+			if (parsed.args.some((key) => key.toLowerCase() === 'itemcode') && items?.list) {
+				for (const item of items.list) {
 					const value = String(item?.code ?? '');
-					if (!value) {return;}
-					if (existing.has(value) || dynamicSeen.has(value)) {return;}
-					dynamicSeen.add(value);
-					const label = typeof item?.name === 'string' ? item.name : '';
-					dynamicSuggestions.push({ value, label });
-				});
+					const label = typeof item?.name === 'string' && item.name.trim() ? item.name : value;
+					pushUnique(value, label);
+				}
 			}
-			return;
+			continue;
 		}
-
-		if (parsed?.scope === 'keyboard') {
-			resolveKeyboardSuggestions(parsed.args).forEach((s) => {
-				if (existing.has(s.value) || dynamicSeen.has(s.value)) {return;}
-				dynamicSeen.add(s.value);
-				dynamicSuggestions.push(s);
-			});
-			return;
+		if (parsed.scope === 'keyboard') {
+			resolveKeyboardSuggestions(parsed.args).forEach((suggestion) => pushUnique(suggestion.value, suggestion.label));
+			continue;
 		}
-
-		const results = resolveDynamicQuery(query, events, items, cgapp, resources, sources);
-		results.forEach((r) => {
-			if (existing.has(r) || dynamicSeen.has(r)) {return;}
-			dynamicSeen.add(r);
-			dynamicSuggestions.push({ value: r, label: r });
-		});
-	});
+		resolveDynamicQuery(parsed, events, items, cgapp, resources, sources).forEach((value) => pushUnique(value));
+	}
 
 	dynamicSuggestions.sort((a, b) => a.value.localeCompare(b.value));
 	return staticSuggestions.concat(dynamicSuggestions);

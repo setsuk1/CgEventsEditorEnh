@@ -1,5 +1,4 @@
 import 'bootstrap/dist/css/bootstrap.min.css';
-import 'bootstrap/dist/js/bootstrap.bundle.min.js';
 
 import '@media/css/components.actions.css';
 import '@media/css/components.base-settings.css';
@@ -25,26 +24,25 @@ import '@media/css/core.motion.css';
 import '@media/css/core.settings.css';
 import '@media/css/core.utilities.css';
 
-import { IncomingMessageType, OutgoingMessageType } from '@shared';
+import { IIncomingMessageLanguageSyncData, IncomingMessageType } from '@shared';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { editor } from './editor/CgEventsEditor';
+import { editor, EditorChangeEvents } from './editor/CgEventsEditor';
 import { msgHandler } from './msg/MessageHandler';
 import { winEE } from './msg/WindowEventEmitter';
 import { App } from './ui/App';
-import { eventCardHeaderGlobalManager } from './ui/components/events/EventCardHeaderGlobalManager';
 import { logicItemsListGlobalManager } from './ui/components/events/LogicItemsListGlobalManager';
+import { selectionStateManager } from './ui/components/events/SelectionState';
+
+const container = document.getElementById('cgevents-root') as HTMLDivElement;
+const editorWorkerUrl = container.dataset.monacoEditorWorker as string;
+const jsonWorkerUrl = container.dataset.monacoJsonWorker as string;
 
 self.MonacoEnvironment = {
     getWorkerUrl: function (_moduleId: string, label: string) {
-        if (label === 'json') {
-            return './monaco-workers/json.worker.js';
-        }
-        return './monaco-workers/editor.worker.js';
+        return label === 'json' ? jsonWorkerUrl : editorWorkerUrl;
     }
 };
-
-export const vscode = acquireVsCodeApi();
 
 function syncBootstrapThemeFromVscode() {
     const body = document.body;
@@ -60,97 +58,57 @@ new MutationObserver(() => syncBootstrapThemeFromVscode()).observe(document.body
 	attributeFilter: ['class'],
 });
 
-msgHandler.on(IncomingMessageType.EVENTS_JSON, editor.setCgEventsJson, editor);
-msgHandler.on(IncomingMessageType.EVENTS_SCHEMA_JSON, editor.setCgEventsSchema, editor);
-msgHandler.on(IncomingMessageType.CGAPP, editor.setCgApp, editor);
-msgHandler.on(IncomingMessageType.PROJECT_ITEMS, editor.setItems, editor);
-msgHandler.on(IncomingMessageType.PROJECT_SOURCES, editor.setSources, editor);
-msgHandler.on(IncomingMessageType.PROJECT_RESOURCES, editor.setResources, editor);
-msgHandler.on(IncomingMessageType.SORTING_PRESETS, editor.setSortingPresets, editor);
+function syncDocumentLanguage(data: IIncomingMessageLanguageSyncData) {
+    if (data.languageCode) document.documentElement.lang = data.languageCode;
+}
 
-const existing = document.getElementById('cgevents-root');
-const container = existing ?? (() => {
-    const el = document.createElement('div');
-    el.id = 'cgevents-root';
-    document.body.appendChild(el);
-    return el;
-})();
+msgHandler.onIncoming(IncomingMessageType.LANGUAGE_SYNC, syncDocumentLanguage);
+msgHandler.onIncoming(IncomingMessageType.EVENTS_JSON, (data) => editor.setCgEventsJson(data));
+msgHandler.onIncoming(IncomingMessageType.EVENTS_SCHEMA_JSON, (data) => editor.setCgEventsSchema(data));
+msgHandler.onIncoming(IncomingMessageType.CGAPP, (data) => editor.setCgApp(data));
+msgHandler.onIncoming(IncomingMessageType.PROJECT_ITEMS, (data) => editor.setItems(data));
+msgHandler.onIncoming(IncomingMessageType.PROJECT_SOURCES, (data) => editor.setSources(data));
+msgHandler.onIncoming(IncomingMessageType.PROJECT_RESOURCES, (data) => editor.setResources(data));
+msgHandler.onIncoming(IncomingMessageType.SORTING_PRESETS, (data) => editor.setSortingPresets(data));
+
+function reconcileSelectionToCurrentEvents(payload?: { eventId?: string; previousEventId?: string }) {
+    selectionStateManager.reconcileEvents(
+        payload,
+        editor.getEvents().map((event) => event.id),
+    );
+}
+
+function clearSelectionAfterLogicStructureChange() {
+    selectionStateManager.clearSelection();
+}
+
+editor.on(EditorChangeEvents.EVENT_UPDATED, reconcileSelectionToCurrentEvents);
+editor.on(EditorChangeEvents.EVENT_REMOVED, reconcileSelectionToCurrentEvents);
+editor.on(EditorChangeEvents.EVENTS_REPLACED, reconcileSelectionToCurrentEvents);
+editor.on(EditorChangeEvents.DOCUMENT_UPDATED, clearSelectionAfterLogicStructureChange);
+[
+    EditorChangeEvents.TRIGGER_ADDED,
+    EditorChangeEvents.TRIGGER_REMOVED,
+    EditorChangeEvents.TRIGGER_MOVED,
+    EditorChangeEvents.CHECK_ADDED,
+    EditorChangeEvents.CHECK_REMOVED,
+    EditorChangeEvents.CHECK_MOVED,
+    EditorChangeEvents.ACTION_ADDED,
+    EditorChangeEvents.ACTION_REMOVED,
+    EditorChangeEvents.ACTION_MOVED,
+].forEach((eventType) => editor.on(eventType, clearSelectionAfterLogicStructureChange));
 
 const root = createRoot(container);
 root.render(React.createElement(App, { editor }));
 
-function isEditableTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) {
-        return false;
-    }
-    if (target.isContentEditable) {
-        return true;
-    }
-    return Boolean(target.closest('input, textarea, select, option, [contenteditable], .monaco-editor'));
-}
-
-function isPanelOpen(): boolean {
-    if (document.body.classList.contains('cgenh-has-modal-open')) {
-        return true;
-    }
-    return document.querySelector('.modal.show, .modal-backdrop.show') !== null;
-}
-
-function handleGlobalKeyDown(event: KeyboardEvent) {
-    // if (event.defaultPrevented) {
-    //     return;
-    // }
-    const hasCtrl = event.ctrlKey || event.metaKey;
-    if (!hasCtrl) {
-        return;
-    }
-    const key = event.key.toLowerCase();
-    const isSave = key === 's';
-    const isUndo = key === 'z';
-    const isRedo = key === 'y';
-    if (!isSave && !isUndo && !isRedo) {
-        return;
-    }
-    if (isPanelOpen()) {
-        return;
-    }
-    if (!isSave && isEditableTarget(event.target)) {
-        return;
-    }
-    event.preventDefault();
-
-    if (isSave) {
-        const entry = editor.getCurrentEntry();
-        if (entry) {
-            msgHandler.send(OutgoingMessageType.SAVE, entry);
-        }
-        return;
-    }
-    if (isUndo) {
-        editor.undo();
-        return;
-    }
-    editor.redo();
-}
-
 function handleLogicItemsListMouseDown(event: MouseEvent) {
     logicItemsListGlobalManager.handleWindowMouseDown(event);
-}
-
-function handleLogicItemsListMouseMove(event: MouseEvent) {
-    logicItemsListGlobalManager.handleWindowMouseMove(event);
 }
 
 function handleLogicItemsListKeyDown(event: KeyboardEvent) {
     logicItemsListGlobalManager.handleWindowKeyDown(event);
 }
 
-function handleEventCardHeaderKeyDown(event: KeyboardEvent) {
-	eventCardHeaderGlobalManager.handleWindowKeyDown(event);
-}
 
 winEE.on('mousedown', handleLogicItemsListMouseDown);
-winEE.on('mousemove', handleLogicItemsListMouseMove);
 winEE.on('keydown', handleLogicItemsListKeyDown);
-winEE.on('keydown', handleEventCardHeaderKeyDown);
-winEE.on('keydown', handleGlobalKeyDown);

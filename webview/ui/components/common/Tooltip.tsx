@@ -1,5 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
+import { CAPTURED_SCROLL_EVENT, winEE } from '../../../msg/WindowEventEmitter';
+import { clampViewportCoordinate } from '../../utils/viewportPosition';
 
 interface TooltipProps {
 	content: string;
@@ -7,24 +9,31 @@ interface TooltipProps {
 }
 
 interface TooltipState {
-	visible: boolean;
+	hovered: boolean;
+	focused: boolean;
 }
 
 export class Tooltip extends React.PureComponent<TooltipProps, TooltipState> {
 	private targetRef = React.createRef<HTMLDivElement>();
 
-	state: TooltipState = { visible: false };
+	state: TooltipState = { hovered: false, focused: false };
 
-	private show = () => {
-		if (!this.state.visible) {
-			this.setState({ visible: true });
-		}
-	};
+	private setVisibilitySource(source: 'hover' | 'focus', active: boolean): void {
+		this.setState((previous) => {
+			if (source === 'hover') {
+				return previous.hovered === active ? null : { ...previous, hovered: active };
+			}
+			return previous.focused === active ? null : { ...previous, focused: active };
+		});
+	}
 
-	private hide = () => {
-		if (this.state.visible) {
-			this.setState({ visible: false });
-		}
+	private handleMouseEnter = () => this.setVisibilitySource('hover', true);
+	private handleMouseLeave = () => this.setVisibilitySource('hover', false);
+	private handleFocus = () => this.setVisibilitySource('focus', true);
+	private handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+		const nextTarget = event.relatedTarget;
+		if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+		this.setVisibilitySource('focus', false);
 	};
 
 	render() {
@@ -32,15 +41,15 @@ export class Tooltip extends React.PureComponent<TooltipProps, TooltipState> {
 			<>
 				<div
 					ref={this.targetRef}
-					onMouseEnter={this.show}
-					onMouseLeave={this.hide}
+					onMouseEnter={this.handleMouseEnter}
+					onMouseLeave={this.handleMouseLeave}
+					onFocus={this.handleFocus}
+					onBlur={this.handleBlur}
 					className="cgenh-tooltip-target"
 				>
 					{this.props.children}
 				</div>
-				{this.state.visible && (
-					<TooltipPortal content={this.props.content} targetRef={this.targetRef} />
-				)}
+				{(this.state.hovered || this.state.focused) && <TooltipPortal content={this.props.content} targetRef={this.targetRef} />}
 			</>
 		);
 	}
@@ -60,64 +69,51 @@ class TooltipPortal extends React.PureComponent<TooltipPortalProps> {
 
 	componentDidMount(): void {
 		this.updateOpacityVar('0');
+		winEE.on('resize', this.schedulePositionUpdate);
+		winEE.on(CAPTURED_SCROLL_EVENT, this.schedulePositionUpdate);
 		this.schedulePositionUpdate();
 	}
 
 	componentDidUpdate(prevProps: TooltipPortalProps): void {
-		if (
-			prevProps.content !== this.props.content ||
-			prevProps.targetRef !== this.props.targetRef
-		) {
+		if (prevProps.content !== this.props.content || prevProps.targetRef !== this.props.targetRef) {
 			this.schedulePositionUpdate();
 		}
 	}
 
 	componentWillUnmount(): void {
+		winEE.off('resize', this.schedulePositionUpdate);
+		winEE.off(CAPTURED_SCROLL_EVENT, this.schedulePositionUpdate);
 		if (this.rafId !== null) {
 			cancelAnimationFrame(this.rafId);
 			this.rafId = null;
 		}
 	}
 
-	private schedulePositionUpdate() {
-		if (this.rafId !== null) {
-			return;
-		}
+	private schedulePositionUpdate = () => {
+		if (this.rafId !== null) return;
 		this.rafId = requestAnimationFrame(() => {
 			this.rafId = null;
 			this.updatePosition();
 		});
-	}
+	};
 
 	private updatePosition() {
 		const target = this.props.targetRef.current;
 		const tooltip = this.tooltipRef.current;
-		if (!target || !tooltip) {
-			return;
-		}
+		if (!target || !tooltip) return;
 
 		const targetRect = target.getBoundingClientRect();
 		const tooltipRect = tooltip.getBoundingClientRect();
 		const viewportW = window.innerWidth;
 		const viewportH = window.innerHeight;
-
 		const gap = 6;
 		let top = targetRect.top - tooltipRect.height - gap;
 		let left = targetRect.left + targetRect.width / 2 - tooltipRect.width / 2;
 
-		if (top < 0) {
-			top = targetRect.bottom + gap;
-		}
-
+		if (top < 0) top = targetRect.bottom + gap;
 		const padding = 8;
-		if (left < padding) left = padding;
-		if (left + tooltipRect.width > viewportW - padding) {
-			left = viewportW - tooltipRect.width - padding;
-		}
-
-		if (top + tooltipRect.height > viewportH - padding) {
-			top = Math.min(top, viewportH - tooltipRect.height - padding);
-		}
+		left = clampViewportCoordinate(left, tooltipRect.width, padding, viewportW);
+		top = clampViewportCoordinate(top, tooltipRect.height, padding, viewportH);
 
 		this.updatePositionVars(`${top}px`, `${left}px`);
 		this.updateOpacityVar('1');
@@ -125,9 +121,7 @@ class TooltipPortal extends React.PureComponent<TooltipPortalProps> {
 
 	private updatePositionVars(top: string, left: string) {
 		const tooltip = this.tooltipRef.current;
-		if (!tooltip) {
-			return;
-		}
+		if (!tooltip) return;
 		if (this.topVar !== top) {
 			this.topVar = top;
 			tooltip.style.setProperty('--cgenh-tooltip-top', top);
@@ -139,26 +133,16 @@ class TooltipPortal extends React.PureComponent<TooltipPortalProps> {
 	}
 
 	private updateOpacityVar(value: string) {
-		if (this.opacityVar === value) {
-			return;
-		}
+		if (this.opacityVar === value) return;
 		const tooltip = this.tooltipRef.current;
-		if (!tooltip) {
-			return;
-		}
+		if (!tooltip) return;
 		this.opacityVar = value;
 		tooltip.style.setProperty('--cgenh-tooltip-opacity', value);
 	}
 
 	render() {
-		const className = [
-			'tooltip',
-			'bs-tooltip-auto',
-			'show',
-			'cgenh-tooltip',
-		].filter(Boolean).join(' ');
 		return createPortal(
-			<div className={className} ref={this.tooltipRef} role="tooltip">
+			<div className="tooltip bs-tooltip-auto show cgenh-tooltip" ref={this.tooltipRef} role="tooltip">
 				<div className="tooltip-inner">{this.props.content}</div>
 			</div>,
 			document.body

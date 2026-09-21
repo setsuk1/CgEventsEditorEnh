@@ -43,20 +43,74 @@ function getElseEventId(data?: Record<string, unknown>): string | undefined {
 	return getStringValue(data, '_elseEventId');
 }
 
-function getLoopBreaks(data?: Record<string, unknown>): number {
-	if (!data) return 0;
-	const raw = data['_loopBreaks'];
-	if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0;
-	return Math.max(0, Math.floor(raw));
+export interface LoopBreakUpdate {
+	index: number;
+	breaks: number;
 }
 
-function getLoopState(data?: Record<string, unknown>): LoopIndicatorState {
+export function normalizeLoopBreaks(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+	return Math.max(0, Math.floor(value));
+}
+
+export function getLoopBreaks(data?: Record<string, unknown>): number {
+	return normalizeLoopBreaks(data?.['_loopBreaks']);
+}
+
+export function getLoopState(data?: Record<string, unknown>): LoopIndicatorState {
 	if (!data) return { isLoop: false, showSigma: false };
 	const raw = data['donotActOnEachPass'];
 	if (typeof raw === 'boolean') {
 		return { isLoop: true, showSigma: raw };
 	}
 	return { isLoop: false, showSigma: false };
+}
+
+export function computeLoopBreakUpdates(
+	items: readonly ICgEventLogicBlock[],
+	startIndex: number,
+	delta: number,
+): LoopBreakUpdate[] {
+	const increment = normalizeLoopBreaks(delta);
+	if (increment === 0 || startIndex < 0 || startIndex >= items.length) {
+		return [];
+	}
+
+	let nextLevel = 0;
+	for (let index = 0; index < startIndex; index++) {
+		const item = items[index];
+		const loopState = getLoopState(item?.data);
+		const breaks = getLoopBreaks(item?.data);
+		const level = Math.max(0, nextLevel - breaks);
+		nextLevel = level + (loopState.isLoop ? 1 : 0);
+	}
+
+	const updates: LoopBreakUpdate[] = [];
+	for (let index = startIndex; index < items.length; index++) {
+		const item = items[index];
+		const data = item?.data;
+		const loopState = getLoopState(data);
+		const breaks = getLoopBreaks(data);
+		const incomingLevel = nextLevel;
+		const maxBreaks = Math.max(0, Math.floor(incomingLevel));
+		let nextBreaks = breaks;
+
+		if (index === startIndex) {
+			nextBreaks = Math.min(breaks + increment, maxBreaks);
+		} else if (breaks > maxBreaks) {
+			nextBreaks = maxBreaks;
+		}
+
+		const shouldUpdate = data !== undefined && nextBreaks !== breaks;
+		if (shouldUpdate) {
+			updates.push({ index, breaks: nextBreaks });
+		}
+		const appliedBreaks = shouldUpdate ? nextBreaks : breaks;
+		const level = Math.max(0, incomingLevel - appliedBreaks);
+		nextLevel = level + (loopState.isLoop ? 1 : 0);
+	}
+
+	return updates;
 }
 
 function getBlockingLoopLevel(data: Record<string, unknown> | undefined, level: number): number | null {
@@ -152,8 +206,8 @@ export function computeCheckSectionMeta(items: ICgEventLogicBlock[]): CheckSecti
 	}
 
 	const andLineLevelsByRow: number[][] = new Array(items.length);
-	const startsAt: number[][] = Array.from({ length: items.length }, () => []);
-	const endsAt: number[][] = Array.from({ length: items.length }, () => []);
+	const startsAt: number[][] = Array.from({ length: items.length }, (): number[] => []);
+	const endsAt: number[][] = Array.from({ length: items.length }, (): number[] => []);
 	for (let i = 0; i < items.length; i++) {
 		const normalized = normalizedAndOrByIndex[i] ?? '';
 		if (isAndValue(normalized) && prevSameLevelIndex[i] !== -1) {

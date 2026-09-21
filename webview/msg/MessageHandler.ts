@@ -1,29 +1,37 @@
-import { IOutgoingMessageMap, OutgoingMessageType } from '@shared';
-import { vscode } from '../index';
+import { IIncomingMessageMap, IncomingMessageType, IOutgoingMessageMap, isIncomingMessage, OutgoingMessageType } from '@shared';
 import { winEE } from '../msg/WindowEventEmitter';
+import { messageToken, vscode } from '../vscodeApi';
 import { EventEmitter } from '../utils/EventEmitter';
 
 export class MessageHandler extends EventEmitter {
-
 	constructor() {
-		if (msgHandler) {
-			return msgHandler;
-		}
 		super();
-		winEE.on('message', this.handleMessage, this);
+		winEE.on('message', this.handleMessage);
 	}
 
-	protected handleMessage(ev: MessageEvent<any>) {
+	onIncoming<T extends IncomingMessageType>(
+		type: T,
+		listener: (data: IIncomingMessageMap[T]) => void,
+	): boolean {
+		return super.on(type, listener);
+	}
+
+	offIncoming<T extends IncomingMessageType>(
+		type: T,
+		listener: (data: IIncomingMessageMap[T]) => void,
+	): boolean {
+		return super.off(type, listener);
+	}
+
+	protected handleMessage = (ev: MessageEvent<unknown>) => {
 		const msg = ev.data;
-		if (!msg) {
-			return;
-		}
-
+		if (!msg || typeof msg !== 'object' || Array.isArray(msg) || (msg as { token?: unknown }).token !== messageToken) return;
+		if (!isIncomingMessage(msg)) return;
 		this.emit(msg.type, msg.data);
-	}
+	};
 
 	send<T extends OutgoingMessageType>(type: T, data: IOutgoingMessageMap[T]) {
-		vscode.postMessage({ type, data });
+		vscode.postMessage({ token: messageToken, type, data });
 	}
 }
 

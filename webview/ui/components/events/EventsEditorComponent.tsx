@@ -1,36 +1,53 @@
-import sortingSchema from '@media/json/sorting.enheditor.schema.json';
 import { ISortingPreset, ISortingRule, OutgoingMessageType } from '@shared';
 import React from 'react';
-import { editor, EditorChangeEvents } from '../../../editor/CgEventsEditor';
+import { editor, EditorChangeEvents, type EditorChangeEventPayload, type EditorChangeEventType } from '../../../editor/CgEventsEditor';
 import { playMouseDownAudio, playMouseHoverAudio } from '../../../helper/sound';
 import { msgHandler } from '../../../msg/MessageHandler';
 import { translation } from '../../../trans/Trans';
 import { SvgCollapseAll } from '../../svg/SvgCollapseAll';
 import { SvgExpandAll } from '../../svg/SvgExpandAll';
-import { SvgTrash } from '../../svg/SvgTrash';
-import { RJSFConfigsPanel } from '../../rjsf/RJSFConfigsPanel';
 import { acquireModalLock } from '../../utils/modalLock';
 import { BaseSettings } from '../base/BaseSettings';
 import { EventComponent } from './EventComponent';
+import {
+	computeEventFolderOptions,
+	getSortedEventIdsForDisplay as deriveSortedEventIdsForDisplay,
+	haveSameUniqueStringSet,
+	reconcileEventFolderFilter,
+	resolveEventNavigationFolderFilter,
+	resolveNewEventFolder,
+	stringArraysEqual,
+} from './EventsDisplay';
 import { eventCardUiStateStore } from './EventCardUiStateStore';
 import { EventsFolderDropdown } from './EventsFolderDropdown';
 import { eventsNavigation } from './EventsNavigation';
 import { EventsSortingDropdown } from './EventsSortingDropdown';
+import { EventsSortingModals } from './EventsSortingModals';
 import { VirtualizedEventsList } from './VirtualizedEventsList';
 
 const NO_FOLDER_VALUE = '__NO_FOLDER__';
 const ALL_FOLDERS_VALUE = '__ALL__';
+
+const EVENT_LIST_REFRESH_EVENTS: readonly EditorChangeEventType[] = [
+	EditorChangeEvents.EVENT_ADDED,
+	EditorChangeEvents.EVENT_REMOVED,
+	EditorChangeEvents.EVENT_MOVED,
+	EditorChangeEvents.EVENTS_REORDERED,
+	EditorChangeEvents.EVENTS_REPLACED,
+	EditorChangeEvents.DOCUMENT_UPDATED,
+];
+
 
 interface EventsEditorComponentProps {
 	onEditAsJson(): void;
 	scrollContainerRef: React.RefObject<HTMLElement>;
 }
 
-const DEFAULT_PRESET_NAME: string = undefined;
+const DEFAULT_PRESET_NAME: string | undefined = undefined;
 
-const createDefaultPreset = (): ISortingPreset => ({
+const createDefaultPreset = () => ({
 	name: DEFAULT_PRESET_NAME,
-	rules: [{ order: 'asc', target: 'index' }],
+	rules: [{ order: 'asc' as const, target: 'index' as const }],
 });
 
 type ConfirmModalAction = 'overwrite' | 'delete' | '';
@@ -45,11 +62,10 @@ interface EventsEditorComponentState {
 	sortingModalOpen: boolean;
 	sortingRules: ISortingRule[];
 	// Preset management
-	currentPresetName: string;
+	currentPresetName?: string;
 	saveModalOpen: boolean;
 	loadModalOpen: boolean;
 	presetNameInput: string;
-	sortingPresetsVersion: number;
 	confirmModalOpen: boolean;
 	confirmModalMessage: string;
 	confirmModalAction: ConfirmModalAction;
@@ -64,7 +80,6 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	private folderDropdownRef: React.RefObject<HTMLDivElement> = React.createRef();
 	private folderButtonRef: React.RefObject<HTMLButtonElement> = React.createRef();
 	private sortingDropdownRef: React.RefObject<HTMLDivElement> = React.createRef();
-	private baseSettingsRef: React.RefObject<BaseSettings> = React.createRef();
 	private presetNameInputRef: React.RefObject<HTMLInputElement> = React.createRef();
 	private editorListenersAttached = false;
 	private releaseModalLock: (() => void) | null = null;
@@ -72,7 +87,7 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	constructor(props: EventsEditorComponentProps) {
 		super(props);
 		const eventIds = this.getEventIds();
-		const initialFolderOptions = this.computeFolderOptions();
+		const initialFolderOptions = computeEventFolderOptions(editor.getEvents());
 		const defaultPreset = createDefaultPreset();
 
 		this.state = {
@@ -87,7 +102,6 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			saveModalOpen: false,
 			loadModalOpen: false,
 			presetNameInput: '',
-			sortingPresetsVersion: 0,
 			confirmModalOpen: false,
 			confirmModalMessage: '',
 			confirmModalAction: '',
@@ -99,11 +113,11 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	componentDidMount(): void {
 		this.attachEditorListeners();
 		this.refreshEventIds();
-		eventsNavigation.on('scroll-to-event', this.handleScrollToEventRequest, this);
+		eventsNavigation.on('scroll-to-event', this.handleScrollToEventRequest);
 	}
 
 	componentWillUnmount(): void {
-		eventsNavigation.off('scroll-to-event', this.handleScrollToEventRequest, this);
+		eventsNavigation.off('scroll-to-event', this.handleScrollToEventRequest);
 		this.detachEditorListeners();
 		// Release modal lock if held
 		this.releaseModalLock?.();
@@ -111,15 +125,28 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	}
 
 	private handleSortingPresetsUpdated = () => {
-		this.setState((prev) => ({ sortingPresetsVersion: prev.sortingPresetsVersion + 1 }));
+		this.forceUpdate();
 	};
 
 	private handleScrollToEventRequest = (eventId: string) => {
+		const targetId = eventId.trim();
 		const list = this.virtualListRef.current;
-		if (!list) {
+		if (!targetId || !list || list.scrollToEventId(targetId)) {
 			return;
 		}
-		list.scrollToEventId(eventId);
+
+		const nextFilter = resolveEventNavigationFolderFilter(
+			this.state.folderFilter,
+			editor.getEventById(targetId),
+			ALL_FOLDERS_VALUE,
+			NO_FOLDER_VALUE,
+		);
+		if (!nextFilter) {
+			return;
+		}
+		this.setState({ folderFilter: nextFilter }, () => {
+			this.virtualListRef.current?.scrollToEventId(targetId);
+		});
 	};
 
 	private attachEditorListeners(): void {
@@ -127,21 +154,11 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			return;
 		}
 		this.editorListenersAttached = true;
-		editor.on(EditorChangeEvents.EVENT_ADDED, this.handleEventAdded, this);
-
-		editor.on(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated, this);
-
-		editor.on(EditorChangeEvents.EVENT_REMOVED, this.handleEventRemoved, this);
-
-		editor.on(EditorChangeEvents.EVENT_MOVED, this.handleEventMoved, this);
-
-		editor.on(EditorChangeEvents.EVENTS_REORDERED, this.handleEventsReordered, this);
-
-		editor.on(EditorChangeEvents.EVENTS_REPLACED, this.handleEventsReplaced, this);
-
-		editor.on(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated, this);
-
-		editor.on(EditorChangeEvents.SORTING_PRESETS_UPDATED, this.handleSortingPresetsUpdated, this);
+		for (const eventType of EVENT_LIST_REFRESH_EVENTS) {
+			editor.on(eventType, this.handleEventListRefresh);
+		}
+		editor.on(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated);
+		editor.on(EditorChangeEvents.SORTING_PRESETS_UPDATED, this.handleSortingPresetsUpdated);
 	}
 
 	private detachEditorListeners(): void {
@@ -149,65 +166,37 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			return;
 		}
 		this.editorListenersAttached = false;
-		editor.off(EditorChangeEvents.EVENT_ADDED, this.handleEventAdded, this);
-		editor.off(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated, this);
-		editor.off(EditorChangeEvents.EVENT_REMOVED, this.handleEventRemoved, this);
-		editor.off(EditorChangeEvents.EVENT_MOVED, this.handleEventMoved, this);
-		editor.off(EditorChangeEvents.EVENTS_REORDERED, this.handleEventsReordered, this);
-		editor.off(EditorChangeEvents.EVENTS_REPLACED, this.handleEventsReplaced, this);
-		editor.off(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated, this);
-		editor.off(EditorChangeEvents.SORTING_PRESETS_UPDATED, this.handleSortingPresetsUpdated, this);
+		for (const eventType of EVENT_LIST_REFRESH_EVENTS) {
+			editor.off(eventType, this.handleEventListRefresh);
+		}
+		editor.off(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated);
+		editor.off(EditorChangeEvents.SORTING_PRESETS_UPDATED, this.handleSortingPresetsUpdated);
 	}
 
-	private handleEventAdded = () => {
+	private handleEventListRefresh = () => {
 		this.refreshEventIds();
 	};
 
-	private handleEventUpdated = () => {
+	private handleEventUpdated = (payload?: EditorChangeEventPayload) => {
 		const nextIds = this.getEventIds();
-		const idsChanged = !this.arraysEqual(this.state.eventIds, nextIds);
+		const idsChanged = !stringArraysEqual(this.state.eventIds, nextIds);
+		const previousFolder = (payload?.previousEvent?.folder ?? '').trim();
+		const nextFolder = (payload?.event?.folder ?? '').trim();
+		const folderRename = previousFolder && nextFolder && previousFolder !== nextFolder
+			? { previousFolder, nextFolder }
+			: undefined;
+
 		if (idsChanged) {
-			this.refreshEventIds(nextIds);
+			const previousEventId = payload?.previousEventId;
+			const eventId = payload?.eventId;
+			if (previousEventId && eventId && previousEventId !== eventId) {
+				eventCardUiStateStore.rename(previousEventId, eventId);
+			}
+			this.refreshEventIds(nextIds, folderRename);
 			return;
 		}
-		this.syncFolderOptions();
+		this.syncFolderOptions(folderRename);
 	};
-
-	private handleEventRemoved = () => {
-		this.refreshEventIds();
-	};
-
-	private handleEventMoved = () => {
-		this.refreshEventIds();
-	};
-
-	private handleEventsReordered = () => {
-		this.refreshEventIds();
-	};
-
-	private handleEventsReplaced = () => {
-		this.refreshEventIds();
-	};
-
-	private handleDocumentUpdated = () => {
-		this.refreshEventIds();
-	};
-
-	private hasSameIdSet(a: string[], b: string[]): boolean {
-		if (a.length !== b.length) {
-			return false;
-		}
-		const set = new Set(a);
-		if (set.size !== a.length) {
-			return false;
-		}
-		for (let i = 0; i < b.length; i++) {
-			if (!set.has(b[i])) {
-				return false;
-			}
-		}
-		return true;
-	}
 
 	private pruneEventComponentRefs(validIds: string[]) {
 		const keep = new Set(validIds);
@@ -218,14 +207,16 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 		}
 	}
 
-	private refreshEventIds(nextIdsOverride?: string[]) {
+	private refreshEventIds(nextIdsOverride?: string[], folderRename?: { previousFolder: string; nextFolder: string }) {
 		const nextIds = nextIdsOverride ?? this.getEventIds();
 		const prevIds = this.state.eventIds;
-		if (this.arraysEqual(prevIds, nextIds)) {
+		if (stringArraysEqual(prevIds, nextIds)) {
+			this.syncFolderOptions();
+			this.forceUpdate();
 			return;
 		}
 
-		const reorderOnly = this.hasSameIdSet(prevIds, nextIds);
+		const reorderOnly = haveSameUniqueStringSet(prevIds, nextIds);
 		if (!reorderOnly) {
 			this.pruneEventComponentRefs(nextIds);
 		}
@@ -236,8 +227,15 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 		}
 
 		eventCardUiStateStore.prune(nextIds);
-		const newFolderOptions = this.computeFolderOptions();
-		const nextFilter = this.reconcileFolderFilter(this.state.cachedFolderOptions, newFolderOptions, this.state.folderFilter);
+		const newFolderOptions = computeEventFolderOptions(editor.getEvents());
+		const nextFilter = reconcileEventFolderFilter(
+			this.state.cachedFolderOptions,
+			newFolderOptions,
+			this.state.folderFilter,
+			ALL_FOLDERS_VALUE,
+			NO_FOLDER_VALUE,
+			folderRename,
+		);
 		this.setState({
 			eventIds: nextIds,
 			cachedFolderOptions: newFolderOptions,
@@ -245,11 +243,18 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 		});
 	}
 
-	private syncFolderOptions() {
-		const newFolderOptions = this.computeFolderOptions();
-		const nextFilter = this.reconcileFolderFilter(this.state.cachedFolderOptions, newFolderOptions, this.state.folderFilter);
-		const optionsChanged = !this.arraysEqual(this.state.cachedFolderOptions, newFolderOptions);
-		const filterChanged = !this.arraysEqual(this.state.folderFilter, nextFilter);
+	private syncFolderOptions(folderRename?: { previousFolder: string; nextFolder: string }) {
+		const newFolderOptions = computeEventFolderOptions(editor.getEvents());
+		const nextFilter = reconcileEventFolderFilter(
+			this.state.cachedFolderOptions,
+			newFolderOptions,
+			this.state.folderFilter,
+			ALL_FOLDERS_VALUE,
+			NO_FOLDER_VALUE,
+			folderRename,
+		);
+		const optionsChanged = !stringArraysEqual(this.state.cachedFolderOptions, newFolderOptions);
+		const filterChanged = !stringArraysEqual(this.state.folderFilter, nextFilter);
 		if (optionsChanged || filterChanged) {
 			this.setState({
 				cachedFolderOptions: newFolderOptions,
@@ -276,45 +281,6 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 		}
 	}
 
-	private reconcileFolderFilter(prevOptions: string[], nextOptions: string[], currentFilter: string[]): string[] {
-		const specials = new Set([ALL_FOLDERS_VALUE, NO_FOLDER_VALUE]);
-		const removed = prevOptions.filter((item) => !nextOptions.includes(item));
-		const added = nextOptions.filter((item) => !prevOptions.includes(item));
-
-		const mapped = currentFilter.map((value) => {
-			if (removed.length === 1 && added.length === 1 && value === removed[0]) {
-				return added[0];
-			}
-			return value;
-		});
-
-		const filtered = mapped.filter((value) => specials.has(value) || nextOptions.includes(value));
-		const deduped = Array.from(new Set(filtered));
-		if (!deduped.length) {
-			return [ALL_FOLDERS_VALUE];
-		}
-		return deduped;
-	}
-
-	private arraysEqual(a: string[], b: string[]): boolean {
-		if (a.length !== b.length) return false;
-		for (let i = 0; i < a.length; i++) {
-			if (a[i] !== b[i]) return false;
-		}
-		return true;
-	}
-
-	private computeFolderOptions(): string[] {
-		const set = new Set<string>();
-		editor.getEvents().forEach((event) => {
-			const folder = (event.folder ?? '').trim();
-			if (folder) {
-				set.add(folder);
-			}
-		});
-		return Array.from(set).sort((a, b) => a.localeCompare(b));
-	}
-
 	private collapseAll = () => {
 		for (let i = 0; i < this.state.eventIds.length; i++) {
 			eventCardUiStateStore.setCollapsed(this.state.eventIds[i], true);
@@ -336,14 +302,11 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	};
 
 	private handleAddEvent = () => {
-		let folder: string | undefined;
-		if (this.state.folderFilter.length === 1) {
-			if (this.state.folderFilter[0] === NO_FOLDER_VALUE) {
-				folder = '';
-			} else if (this.state.folderFilter[0] !== ALL_FOLDERS_VALUE) {
-				folder = this.state.folderFilter[0];
-			}
-		}
+		const folder = resolveNewEventFolder(
+			this.state.folderFilter,
+			ALL_FOLDERS_VALUE,
+			NO_FOLDER_VALUE,
+		);
 		editor.addEvent(folder !== undefined ? { folder } : undefined);
 	};
 
@@ -376,102 +339,20 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	};
 
 	/**
-	 * Compare two events based on sorting rules.
-	 * Returns negative if a < b, positive if a > b, 0 if equal.
-	 */
-	private compareEvents = (a: ReturnType<typeof editor.getEventById>, b: ReturnType<typeof editor.getEventById>): number => {
-		if (!a || !b) return 0;
-		const { sortingRules } = this.state;
-
-		for (const rule of sortingRules) {
-			const { target, order } = rule;
-			let aVal: unknown = a[target];
-			let bVal: unknown = b[target];
-
-			if (target === 'actions') {
-				aVal = a.actions?.length ?? 0;
-				bVal = b.actions?.length ?? 0;
-			} else if (target === 'checks') {
-				aVal = a.checks?.length ?? 0;
-				bVal = b.checks?.length ?? 0;
-			} else if (target === 'triggers') {
-				aVal = a.triggers?.length ?? 0;
-				bVal = b.triggers?.length ?? 0;
-			} else if (target === 'index') {
-				aVal = editor.getEventIndex(a.id);
-				bVal = editor.getEventIndex(b.id);
-			}
-
-			let cmp = 0;
-			if (typeof aVal === 'string' && typeof bVal === 'string') {
-				cmp = aVal.localeCompare(bVal);
-			} else if (typeof aVal === 'number' && typeof bVal === 'number') {
-				cmp = aVal - bVal;
-			} else if (typeof aVal === 'boolean' && typeof bVal === 'boolean') {
-				cmp = aVal === bVal ? 0 : (aVal ? 1 : -1);
-			} else {
-				cmp = String(aVal ?? '').localeCompare(String(bVal ?? ''));
-			}
-
-			if (cmp !== 0) {
-				return order === 'desc' ? -cmp : cmp;
-			}
-		}
-		return 0;
-	};
-
-	/**
 	 * Get event IDs sorted for display only (does not modify JSON).
 	 * Sorting is always enabled. If sorting by index in ascending order only,
 	 * return the original order (no sorting needed).
 	 */
-	private getSortedEventIdsForDisplay = (): string[] => {
-		const { eventIds, sortingRules } = this.state;
-		const filteredIds = this.getFolderFilteredEventIds(eventIds);
-
-		if (sortingRules.length === 0) {
-			return filteredIds;
-		}
-		if (sortingRules.length === 1 && sortingRules[0].target === 'index' && sortingRules[0].order === 'asc') {
-			return filteredIds;
-		}
-
-		const ids = filteredIds === eventIds ? [...eventIds] : filteredIds;
-		const eventById = new Map<string, ReturnType<typeof editor.getEventById>>();
-		for (let i = 0; i < ids.length; i++) {
-			const id = ids[i];
-			eventById.set(id, editor.getEventById(id));
-		}
-
-		return ids.sort((idA, idB) => {
-			const eventA = eventById.get(idA);
-			const eventB = eventById.get(idB);
-			return this.compareEvents(eventA, eventB);
-		});
-	};
-
-	private getFolderFilteredEventIds(eventIds: string[]): string[] {
-		const filter = this.state.folderFilter;
-		if (!filter.length || filter.includes(ALL_FOLDERS_VALUE)) {
-			return eventIds;
-		}
-		const showNoFolder = filter.includes(NO_FOLDER_VALUE);
-		const filtered: string[] = [];
-		for (let i = 0; i < eventIds.length; i++) {
-			const event = editor.getEventById(eventIds[i]);
-			const folder = event?.folder ?? '';
-			if (!folder) {
-				if (showNoFolder) {
-					filtered.push(eventIds[i]);
-				}
-				continue;
-			}
-			if (filter.includes(folder)) {
-				filtered.push(eventIds[i]);
-			}
-		}
-		return filtered;
-	}
+	private getSortedEventIdsForDisplay = (): string[] =>
+		deriveSortedEventIdsForDisplay(
+			this.state.eventIds,
+			this.state.folderFilter,
+			this.state.sortingRules,
+			(id) => editor.getEventById(id),
+			(id) => editor.getEventIndex(id),
+			ALL_FOLDERS_VALUE,
+			NO_FOLDER_VALUE,
+		);
 
 	private toggleFolderDropdown = () => {
 		this.setState((prev) => ({ folderDropdownOpen: !prev.folderDropdownOpen }));
@@ -547,7 +428,7 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 	};
 
 	private handlePresetNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-		if (e.key !== 'Enter') {
+		if (e.nativeEvent.isComposing || e.key !== 'Enter') {
 			return;
 		}
 		e.preventDefault();
@@ -573,7 +454,7 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			confirmModalPresetName: name,
 			confirmModalReturnTo: returnTo,
 		};
-		this.setState(nextState);
+		this.setState((prev) => ({ ...prev, ...nextState }));
 	};
 
 	private handleConfirmModalCancel = () => {
@@ -584,7 +465,7 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			confirmModalPresetName: '',
 			confirmModalReturnTo: '',
 		};
-		this.setState(nextState);
+		this.setState((prev) => ({ ...prev, ...nextState }));
 	};
 
 	private handleConfirmModalConfirm = () => {
@@ -640,7 +521,7 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			nextState.sortingRules = defaultPreset.rules;
 			nextState.currentPresetName = DEFAULT_PRESET_NAME;
 		}
-		this.setState(nextState);
+		this.setState((prev) => ({ ...prev, ...nextState }));
 	};
 
 	private handleSavePreset = () => {
@@ -698,7 +579,6 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 			return (
 			<section className="d-flex flex-column w-100 flex-grow-1 flex-shrink-0">
 				<BaseSettings
-					ref={this.baseSettingsRef}
 					onEditAsJson={this.props.onEditAsJson}
 					/>
 					<div className="cgenh-events-frame">
@@ -769,211 +649,32 @@ export class EventsEditorComponent extends React.Component<EventsEditorComponent
 							)}
 						</div>
 					</div>
-					{this.state.sortingModalOpen && (
-						<>
-							<div
-							className="modal show d-block"
-							role="dialog"
-							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeSortingModal();
-								}
-							}}
-						>
-							<div
-								className="modal-dialog modal-lg modal-dialog-centered cgenh-modal-dialog"
-								role="document"
-								onMouseDown={(e) => e.stopPropagation()}
-							>
-								<RJSFConfigsPanel
-									configs={{ EventSortingRuleSet: { rules: this.state.sortingRules } }}
-									configKey="EventSortingRuleSet"
-									schema={sortingSchema}
-									schemaSection="definition"
-									onUpdate={this.handleSortingUpdate}
-									onClose={this.closeSortingModal}
-								/>
-							</div>
-						</div>
-						<div className="modal-backdrop show" />
-					</>
-				)}
-				{this.state.saveModalOpen && (
-					<>
-						<div
-							className="modal show d-block"
-							role="dialog"
-							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeSaveModal();
-								}
-							}}
-						>
-							<div
-								className="modal-dialog modal-dialog-centered"
-								role="document"
-								onMouseDown={(e) => e.stopPropagation()}
-							>
-								<div className="modal-content">
-									<div className="modal-header">
-										<h5 className="modal-title">{translation.events.sorting.savePreset.getTrans()}</h5>
-										<button type="button" className="btn-close" onClick={this.closeSaveModal} aria-label={translation.common.close.getTrans()} />
-									</div>
-									<div className="modal-body">
-										<div className="mb-3">
-											<label htmlFor="preset-name-input" className="form-label">{translation.events.sorting.presetName.getTrans()}</label>
-											<input
-												ref={this.presetNameInputRef}
-												type="text"
-												className="form-control"
-												id="preset-name-input"
-												defaultValue={this.state.presetNameInput}
-												onBlur={this.handlePresetNameBlur}
-												onKeyDown={this.handlePresetNameKeyDown}
-												placeholder={translation.events.sorting.presetNamePlaceholder.getTrans()}
-												autoFocus
-											/>
-										</div>
-										{presets.length > 0 && (
-											<div>
-												<label className="form-label">{translation.events.sorting.existingPresets.getTrans()}</label>
-												<div className="list-group list-group-flush cgenh-modal-scroll-list">
-													{presets.map((preset) => (
-														<button
-															key={preset.name}
-															type="button"
-															className="list-group-item list-group-item-action py-2"
-															onClick={() => this.handleSelectPresetName(preset.name)}
-														>
-															{preset.name}
-														</button>
-													))}
-												</div>
-											</div>
-										)}
-									</div>
-									<div className="modal-footer">
-										<button type="button" className="btn btn-secondary" onClick={this.closeSaveModal}>{translation.common.cancel.getTrans()}</button>
-										<button
-											type="button"
-											className="btn btn-primary"
-											onClick={this.handleSavePreset}
-										>
-											{translation.common.save.getTrans()}
-										</button>
-									</div>
-								</div>
-							</div>
-						</div>
-						<div className="modal-backdrop show" />
-					</>
-				)}
-				{this.state.loadModalOpen && (
-					<>
-						<div
-							className="modal show d-block"
-							role="dialog"
-							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeLoadModal();
-								}
-							}}
-						>
-							<div
-								className="modal-dialog modal-dialog-centered"
-								role="document"
-								onMouseDown={(e) => e.stopPropagation()}
-							>
-								<div className="modal-content">
-									<div className="modal-header">
-										<h5 className="modal-title">{translation.events.sorting.loadPreset.getTrans()}</h5>
-										<button type="button" className="btn-close" onClick={this.closeLoadModal} aria-label={translation.common.close.getTrans()} />
-									</div>
-									<div className="modal-body">
-										<div className="cgenh-preset-list">
-											<div
-												className={`cgenh-preset-item${this.state.currentPresetName === DEFAULT_PRESET_NAME ? ' cgenh-preset-item--selected' : ''}`}
-												onClick={this.handleLoadDefaultPreset}
-											>
-												<span className="cgenh-preset-item__name">{translation.events.sorting.defaultPreset.getTrans()}</span>
-												<span className="cgenh-preset-item__badge">Default</span>
-											</div>
-											{presets.map((preset) => (
-												<div
-													key={preset.name}
-													className={`cgenh-preset-item${this.state.currentPresetName === preset.name ? ' cgenh-preset-item--selected' : ''}`}
-													onClick={() => this.handleLoadPreset(preset)}
-												>
-													<span className="cgenh-preset-item__name">{preset.name}</span>
-													<button
-														type="button"
-														className="cgenh-preset-item__delete"
-														onClick={(e) => { e.stopPropagation(); this.handleDeletePreset(preset.name); }}
-														title={translation.events.sorting.deletePreset.getTrans()}
-													>
-														<SvgTrash width={14} height={14} aria-hidden="true" />
-													</button>
-												</div>
-											))}
-											{presets.length === 0 && (
-												<div className="cgenh-preset-empty">
-													{translation.events.sorting.noPresets.getTrans()}
-												</div>
-											)}
-										</div>
-									</div>
-									<div className="modal-footer">
-										<button type="button" className="btn btn-secondary" onClick={this.closeLoadModal}>{translation.common.close.getTrans()}</button>
-									</div>
-								</div>
-							</div>
-						</div>
-						<div className="modal-backdrop show" />
-					</>
-				)}
-				{this.state.confirmModalOpen && (
-					<>
-						<div
-							className="modal show d-block cgenh-modal--confirm"
-							role="dialog"
-							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.handleConfirmModalCancel();
-								}
-							}}
-						>
-							<div
-								className="modal-dialog modal-dialog-centered modal-sm"
-								role="document"
-								onMouseDown={(e) => e.stopPropagation()}
-							>
-								<div className="modal-content">
-									<div className="modal-header">
-										<h5 className="modal-title">{translation.common.confirm.getTrans()}</h5>
-										<button
-											type="button"
-											className="btn-close"
-											onClick={this.handleConfirmModalCancel}
-											aria-label={translation.common.close.getTrans()}
-										/>
-									</div>
-									<div className="modal-body">
-										<p className="mb-0">{this.state.confirmModalMessage}</p>
-									</div>
-									<div className="modal-footer">
-										<button type="button" className="btn btn-secondary" onClick={this.handleConfirmModalCancel}>
-											{translation.common.cancel.getTrans()}
-										</button>
-										<button type="button" className="btn btn-primary" onClick={this.handleConfirmModalConfirm}>
-											{translation.common.confirm.getTrans()}
-										</button>
-									</div>
-								</div>
-							</div>
-						</div>
-						<div className="modal-backdrop show cgenh-modal-backdrop--confirm" />
-					</>
-				)}
+					<EventsSortingModals
+						sortingOpen={this.state.sortingModalOpen}
+						sortingRules={this.state.sortingRules}
+						onSortingUpdate={this.handleSortingUpdate}
+						onCloseSorting={this.closeSortingModal}
+						saveOpen={this.state.saveModalOpen}
+						loadOpen={this.state.loadModalOpen}
+						confirmOpen={this.state.confirmModalOpen}
+						presets={presets}
+						currentPresetName={this.state.currentPresetName}
+						defaultPresetSelected={this.state.currentPresetName === DEFAULT_PRESET_NAME}
+						presetNameInput={this.state.presetNameInput}
+						presetNameInputRef={this.presetNameInputRef}
+						confirmMessage={this.state.confirmModalMessage}
+						onCloseSave={this.closeSaveModal}
+						onPresetNameBlur={this.handlePresetNameBlur}
+						onPresetNameKeyDown={this.handlePresetNameKeyDown}
+						onSelectPresetName={this.handleSelectPresetName}
+						onSavePreset={this.handleSavePreset}
+						onCloseLoad={this.closeLoadModal}
+						onLoadDefaultPreset={this.handleLoadDefaultPreset}
+						onLoadPreset={this.handleLoadPreset}
+						onDeletePreset={this.handleDeletePreset}
+						onConfirmCancel={this.handleConfirmModalCancel}
+						onConfirm={this.handleConfirmModalConfirm}
+					/>
 			</section>
 		);
 	}

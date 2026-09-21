@@ -1,24 +1,29 @@
-import { Uri, workspace } from 'vscode';
+import { FileSystemError, Uri, workspace } from 'vscode';
+
+function isFileNotFound(error: unknown): boolean {
+	return error instanceof FileSystemError && error.code === 'FileNotFound';
+}
 
 export const fsUtil = {
 	async readFile(uri: Uri, encoding: BufferEncoding = 'utf8'): Promise<string | undefined> {
 		try {
 			const buffer = await workspace.fs.readFile(uri);
 			return Buffer.from(buffer).toString(encoding);
-		} catch (e) {
-			console.error(`Error in read file at ${uri.toString()}:`, e);
-		}
-		return undefined;
-	},
-	async readJson(uri: Uri, encoding: BufferEncoding = 'utf8'): Promise<any | undefined> {
-		try {
-			const text = await this.readFile(uri, encoding);
-			if (text) {
-				return JSON.parse(text);
+		} catch (error) {
+			if (!isFileNotFound(error)) {
+				console.error(`Error in read file at ${uri.toString()}:`, error);
 			}
-		} catch (e) {
-			console.error(`Error in read json at ${uri.toString()}:`, e);
+			return undefined;
 		}
-		return undefined;
+	},
+	async readJson(uri: Uri, encoding: BufferEncoding = 'utf8'): Promise<unknown> {
+		const text = await this.readFile(uri, encoding);
+		if (!text) return undefined;
+		try {
+			return JSON.parse(text);
+		} catch (error) {
+			console.error(`Error in parse json at ${uri.toString()}:`, error);
+			return undefined;
+		}
 	}
 } as const;

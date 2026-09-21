@@ -20,9 +20,7 @@ export class SelectorPanel extends React.PureComponent<SelectorPanelProps, {}> {
 	private releaseModalLock: (() => void) | null = null;
 
 	componentDidMount(): void {
-		if (this.props.open) {
-			this.releaseModalLock = acquireModalLock();
-		}
+		if (this.props.open) this.releaseModalLock = acquireModalLock();
 	}
 
 	componentDidUpdate(prevProps: SelectorPanelProps): void {
@@ -42,22 +40,29 @@ export class SelectorPanel extends React.PureComponent<SelectorPanelProps, {}> {
 
 	render() {
 		if (!this.props.open) return null;
-		const { children, footer, onClose, onConfirm } = this.props;
+		const { children, footer, onClose, onConfirm, width, height } = this.props;
+		const dialogStyle: React.CSSProperties = {};
+		if (width) {
+			dialogStyle.width = width;
+			dialogStyle.maxWidth = width;
+		}
+		if (height) dialogStyle.height = height;
+		const showConfirm = this.props.showConfirm !== false && !!onConfirm;
+
 		return (
 			<>
 				<div
 					className="modal show d-block"
 					role="dialog"
 					onMouseDown={(e) => {
-						if (e.target === e.currentTarget) {
-							onClose();
-						}
+						if (e.target === e.currentTarget) onClose();
 					}}
 					onContextMenu={(e) => e.preventDefault()}
 				>
 					<div
 						className="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable cgenh-modal-dialog"
 						role="document"
+						style={dialogStyle}
 						onMouseDown={(e) => e.stopPropagation()}
 						onMouseUp={(e) => e.stopPropagation()}
 						onMouseMove={(e) => e.stopPropagation()}
@@ -69,9 +74,9 @@ export class SelectorPanel extends React.PureComponent<SelectorPanelProps, {}> {
 								{children}
 							</div>
 							<div className="modal-footer">
-								{this.props.showConfirm !== false && (
+								{showConfirm && (
 									<button type="button" className="btn btn-sm btn-outline-secondary" onClick={onConfirm}>
-										{this.props.confirmLabel ?? this.props.cancelLabel ?? translation.common.confirm.getTrans()}
+										{this.props.confirmLabel ?? translation.common.confirm.getTrans()}
 									</button>
 								)}
 								<button type="button" className="btn btn-sm btn-outline-secondary" onClick={onClose}>

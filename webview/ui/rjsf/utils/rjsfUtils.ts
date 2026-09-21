@@ -1,3 +1,11 @@
+import type { RJSFValidationError } from '@rjsf/utils';
+export function hasClassToken(classNames: string, token: string): boolean {
+	return classNames
+		.split(/\s+/)
+		.filter(Boolean)
+		.includes(token);
+}
+
 export function stripCgenhClasses(raw?: string): string {
 	if (!raw) {
 		return '';
@@ -9,14 +17,21 @@ export function stripCgenhClasses(raw?: string): string {
 		.join(' ');
 }
 
-export function getValueByPath(target: any, path: string): any {
-	if (!path) {
-		return undefined;
-	}
-	const parts = path.split('.').filter(Boolean);
+export type RjsfDataPath = string | Array<string | number>;
+
+const UNSAFE_DATA_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+export function getValueByPath(target: any, path: RjsfDataPath): any {
+	const parts = Array.isArray(path) ? path : path.split('.').filter(Boolean);
+	if (!parts.length) return undefined;
 	let cur = target;
 	for (const seg of parts) {
-		if (cur === undefined || cur === null) {
+		if (cur === undefined || cur === null) return undefined;
+		if (typeof seg === 'string' && UNSAFE_DATA_PATH_SEGMENTS.has(seg)) return undefined;
+		if (
+			(typeof cur === 'object' || typeof cur === 'function') &&
+			!Object.hasOwn(cur, seg)
+		) {
 			return undefined;
 		}
 		cur = cur[seg];
@@ -24,7 +39,7 @@ export function getValueByPath(target: any, path: string): any {
 	return cur;
 }
 
-export function isRecord(value: any): value is Record<string, any> {
+export function isRecord(value: unknown): value is Record<string, any> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
@@ -82,8 +97,9 @@ export function coerceValueToSchemaType(value: any, schemaType: unknown): any {
 		const trimmed = value.trim();
 		if (!trimmed) return value;
 		const num = Number(trimmed);
-		if (isNaN(num)) return value;
-		return schemaType === 'integer' ? Math.floor(num) : num;
+		if (!Number.isFinite(num)) return value;
+		if (schemaType === 'integer' && !Number.isInteger(num)) return value;
+		return num;
 	}
 
 	return value;
@@ -126,11 +142,42 @@ export function hasBooleanChange(prev: any, next: any): boolean {
 	return false;
 }
 
-export function getCollapseState(uiSchema: any): { canCollapse: boolean; collapsed: boolean } {
-	const schemaObj = isRecord(uiSchema) ? uiSchema : {};
-	const rawOptions = schemaObj['ui:options'];
-	const uiOptions = isRecord(rawOptions) ? rawOptions : {};
-	const canCollapse = uiOptions.collapsible === true;
-	const collapsed = canCollapse && uiOptions.collapsed === true;
-	return { canCollapse, collapsed };
+
+export function getOwnRjsfConfigEntry(
+	configs: unknown,
+	configKey: string,
+): any {
+	if (
+		configs === null
+		|| configs === undefined
+		|| (typeof configs !== 'object' && typeof configs !== 'function')
+		|| !Object.hasOwn(configs, configKey)
+	) {
+		return {};
+	}
+	return (configs as Record<string, any>)[configKey] ?? {};
+}
+
+
+function hasValidationLimit(params: unknown): params is { limit: unknown } {
+	return !!params && typeof params === 'object' && 'limit' in params;
+}
+
+export function transformRjsfValidationErrors(
+	errors: RJSFValidationError[],
+	requiredMessage: string,
+): RJSFValidationError[] {
+	if (!Array.isArray(errors) || errors.length === 0 || !requiredMessage) return errors;
+
+	let changed = false;
+	const next = errors.map((error) => {
+		const isRequired =
+			error.name === 'required'
+			|| (error.name === 'minLength' && hasValidationLimit(error.params) && error.params.limit === 1)
+			|| (error.name === 'minItems' && hasValidationLimit(error.params) && error.params.limit === 1);
+		if (!isRequired || error.message === requiredMessage) return error;
+		changed = true;
+		return { ...error, message: requiredMessage };
+	});
+	return changed ? next : errors;
 }

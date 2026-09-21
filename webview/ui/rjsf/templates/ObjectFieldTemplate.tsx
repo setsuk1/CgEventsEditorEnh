@@ -6,7 +6,8 @@ import { Tooltip } from '../../components/common/Tooltip';
 import { SvgChevronDown } from '../../svg/SvgChevronDown';
 import { SvgChevronRight } from '../../svg/SvgChevronRight';
 import { HelperWidget } from '../widgets/HelperWidget';
-import { getCollapseState, isHelperFormat, isRecord, stripCgenhClasses } from '../utils/rjsfUtils';
+import { isHelperFormat, isRecord, stripCgenhClasses } from '../utils/rjsfUtils';
+import { resolveNextObjectFieldCollapsedState, resolveObjectFieldLayoutOptions } from './FieldLayout';
 import { evaluateVisibleOption } from '../utils/visibleOption';
 
 interface ObjectFieldTemplateState {
@@ -20,42 +21,21 @@ interface ObjectFieldTemplateState {
 export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplateProps, ObjectFieldTemplateState> {
 	constructor(props: ObjectFieldTemplateProps) {
 		super(props);
-		const { collapsed } = getCollapseState(props.uiSchema);
-		const rawOptions = props.uiSchema?.['ui:options'];
-		const uiOptions = isRecord(rawOptions) ? rawOptions : {};
-		const classNames = typeof props.uiSchema?.['ui:classNames'] === 'string' ? props.uiSchema['ui:classNames'] : '';
-		const optionClassNames = typeof uiOptions.classNames === 'string' ? uiOptions.classNames : '';
-		const hasInlineLayout = uiOptions.oneRow === true
-			|| classNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const hideHeader = hasInlineLayout || uiOptions.noHeader === true;
+		const layout = resolveObjectFieldLayoutOptions(props.uiSchema);
 		this.state = {
-			collapsed: hideHeader ? false : collapsed,
+			collapsed: layout.hideHeader ? false : layout.collapsed,
 		};
 	}
 
 	componentDidUpdate(prevProps: ObjectFieldTemplateProps): void {
-		const prevOptionsRaw = prevProps.uiSchema?.['ui:options'];
-		const prevOptions = isRecord(prevOptionsRaw) ? prevOptionsRaw : {};
-		const nextOptionsRaw = this.props.uiSchema?.['ui:options'];
-		const nextOptions = isRecord(nextOptionsRaw) ? nextOptionsRaw : {};
-		const prevCollapsed = prevOptions.collapsed === true;
-		const nextCollapsed = nextOptions.collapsed === true;
-
-		const classNames = typeof this.props.uiSchema?.['ui:classNames'] === 'string' ? this.props.uiSchema['ui:classNames'] : '';
-		const optionClassNames = typeof nextOptions.classNames === 'string' ? nextOptions.classNames : '';
-		const hasInlineLayout = nextOptions.oneRow === true
-			|| classNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const hideHeader = hasInlineLayout || nextOptions.noHeader === true;
-
-		if (hideHeader) {
-			if (this.state.collapsed) {
-				this.setState({ collapsed: false });
-			}
-			return;
-		}
-		if (prevCollapsed !== nextCollapsed && this.state.collapsed !== nextCollapsed) {
+		const previousLayout = resolveObjectFieldLayoutOptions(prevProps.uiSchema);
+		const nextLayout = resolveObjectFieldLayoutOptions(this.props.uiSchema);
+		const nextCollapsed = resolveNextObjectFieldCollapsedState(
+			this.state.collapsed,
+			previousLayout,
+			nextLayout,
+		);
+		if (nextCollapsed !== this.state.collapsed) {
 			this.setState({ collapsed: nextCollapsed });
 		}
 	}
@@ -66,19 +46,11 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 
 	private handleHelperChange = (next: any) => {
 		const formContext = this.props.registry?.formContext;
-		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') {
-			return;
-		}
+		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') return;
 		const fieldPath = this.props.fieldPathId?.path;
-		if (!Array.isArray(fieldPath)) {
-			return;
-		}
+		if (!Array.isArray(fieldPath)) return;
 
-		let normalized = next;
-		if (normalized === undefined || normalized === null) {
-			normalized = {};
-		}
-
+		const normalized = next === undefined || next === null ? {} : next;
 		formContext.updateFormData(fieldPath, normalized, true);
 	};
 
@@ -93,48 +65,35 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 		const formContext = this.props.registry?.formContext;
 		const rootFormData = isRecord(formContext) ? formContext.rootFormData : undefined;
 
-		// Check if this is the root object or a nested object
-		// Root object has $id === 'root' or empty path
 		const currentId = fieldPathId?.$id || '';
 		const isRoot = !currentId || currentId === 'root';
 
-		// Get col class from ui:options for nested objects
-		const rawOptions = uiSchema?.['ui:options'];
-		const uiOptions = isRecord(rawOptions) ? rawOptions : {};
+		const layout = resolveObjectFieldLayoutOptions(uiSchema);
+		const { uiOptions, uiClassNames: classNames, optionClassNames } = layout;
 		const helper = typeof uiOptions.helper === 'string' ? uiOptions.helper : undefined;
 		const helperFormat = typeof uiOptions.format === 'string' ? uiOptions.format : undefined;
 		const hasSelectionHelper = typeof helper === 'string' && !!helper.trim();
 		const hasViewHelper = isHelperFormat(helperFormat);
 		const visibleOpt = uiOptions.visible;
-		const optionClassNamesRaw = typeof uiOptions.classNames === 'string' ? uiOptions.classNames : undefined;
 		const isDefinitionRef = Boolean(uiOptions.isDefinitionRef || schema.$ref);
-		const noHeader = uiOptions.noHeader === true;
 		const isCollapsed = this.state.collapsed;
 		const toggleLabel = isCollapsed ? translation.list.expand.getTrans() : translation.list.collapse.getTrans();
-
-		// Check if grid layout is requested
-		const classNames = typeof uiSchema?.['ui:classNames'] === 'string' ? uiSchema['ui:classNames'] : '';
-
-		// Check if inline layout is requested (from parent's gridOptions: ['oneRow'])
-		const optionClassNames = optionClassNamesRaw || '';
-		const hasInlineLayout = uiOptions.oneRow === true
-			|| classNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const showHeader = !hasInlineLayout && !noHeader;
+		const showHeader = !layout.hideHeader;
 		const canCollapse = !isRoot && showHeader;
 		const effectiveCollapsed = canCollapse && isCollapsed;
-
-		// Get raw description string from schema
 		const rawDescription = typeof schema.description === 'string' ? schema.description : undefined;
 
 		const helperWidgetBaseProps: WidgetProps | null = (hasSelectionHelper || hasViewHelper) ? (() => {
 			const fieldId = typeof fieldPathId?.$id === 'string' && fieldPathId.$id ? fieldPathId.$id : 'object';
 			return {
 				id: `${fieldId}__helper`,
+				name: fieldId,
 				value: this.props.formData,
 				disabled: this.props.disabled || false,
 				readonly: this.props.readonly || false,
 				onChange: this.handleHelperChange,
+				onBlur: (_id: string, _value: any) => undefined,
+				onFocus: (_id: string, _value: any) => undefined,
 				options: {
 					helper,
 					format: helperFormat,
@@ -148,7 +107,7 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 				required: false,
 				autofocus: false,
 				placeholder: '',
-				rawErrors: [],
+				rawErrors: [] as string[],
 				registry: this.props.registry,
 				formContext: this.props.registry?.formContext,
 			};
@@ -168,7 +127,6 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 			<HelperWidget {...helperWidgetBaseProps} />
 		) : null;
 
-		// For root level, use stack or grid layout
 		if (isRoot) {
 			return (
 				<div className="row">
@@ -179,17 +137,16 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 			);
 		}
 
-		const currentPath = currentId.replace(/^root_?/, '').replace(/_/g, '.');
-		const parentPath = currentPath.split('.').slice(0, -1).join('.');
+		const parentPath = Array.isArray(fieldPathId?.path) ? fieldPathId.path.slice(0, -1) : [];
 		const isVisible = evaluateVisibleOption(visibleOpt, rootFormData, parentPath);
 
 		if (!isVisible) {
-			return <div className="d-none">{properties.map((prop) => prop.content)}</div>;
+			return null;
 		}
 
 		const parentClasses = [
 			'cgenh-config-field',
-			stripCgenhClasses(optionClassNamesRaw),
+			stripCgenhClasses(optionClassNames),
 			stripCgenhClasses(classNames),
 		].filter(Boolean).join(' ');
 
@@ -227,7 +184,7 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 						{!effectiveCollapsed && (
 							<div className="card-body p-2">
 								{bodyHelperWidget && <div className="mb-2">{bodyHelperWidget}</div>}
-								<div className={hasInlineLayout ? 'row g-2' : 'row g-2'}>
+								<div className="row g-2">
 									{properties.map((prop) => prop.content)}
 								</div>
 							</div>
@@ -242,7 +199,7 @@ export class ObjectFieldTemplate extends React.PureComponent<ObjectFieldTemplate
 				{header}
 				{!effectiveCollapsed && bodyHelperWidget && <div className="mb-2">{bodyHelperWidget}</div>}
 				{!effectiveCollapsed && (
-					<div className={hasInlineLayout ? 'row g-2' : 'row g-2'}>
+					<div className="row g-2">
 						{properties.map((prop) => prop.content)}
 					</div>
 				)}

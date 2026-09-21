@@ -2,7 +2,7 @@ import { ICgEventLogicBlock } from '@shared';
 import React from 'react';
 import { EventBlockType } from '../../../editor/eventBlockTypes';
 import type { LoopIndicatorState } from './LogicItemsListCheckMeta';
-import { LogicEntryComponent } from './LogicEntryComponent';
+import { LogicCard } from './LogicCard';
 import { LogicRowControls } from './LogicRowControls';
 
 interface LogicItemsListEntryProps {
@@ -50,12 +50,13 @@ export class LogicItemsListEntry extends React.PureComponent<LogicItemsListEntry
 		);
 
 		return (
-			<LogicEntryComponent
+			<LogicCard
 				controls={controls}
+				showEditButton={false}
 				openDetailNonce={openDetailNonce}
 				eventId={eventId}
 				blockType={blockType}
-				index={index}
+				logicIndex={index}
 				schemaVersion={schemaVersion}
 			/>
 		);

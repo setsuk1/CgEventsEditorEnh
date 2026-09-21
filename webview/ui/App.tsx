@@ -1,16 +1,27 @@
 import { editorLangs, ExternalUrlCode, getByCode, getSelectedLanguage, IEditorLanguageCode, IEditorLanguageSetting, IIncomingMessageLanguageSyncData, IncomingMessageType, IOutgoingMessageLanguageSyncData, ISyncLanguageOptions, ObjectUtil, offLanguageChange, onLanguageChange, OutgoingMessageType, setLanguage } from '@shared';
 import React from 'react';
-import { CgEventsEditor, EditorChangeEvents } from '../editor/CgEventsEditor';
+import { CgEventsEditor, EditorChangeEvents, type EditorChangeEventType } from '../editor/CgEventsEditor';
 import { getAudioVolume, setAudioVolume } from '../helper/sound';
 import { msgHandler } from '../msg/MessageHandler';
 import { winEE } from '../msg/WindowEventEmitter';
 import { translation } from '../trans/Trans';
 import { AppLoadingScreen } from './components/app/AppLoadingScreen';
+import { resolveAppGlobalShortcut, resolveAppNavScrollState } from './AppInteraction';
 import { AppNavbar } from './components/app/AppNavbar';
 import { LanguageSyncDialog } from './components/app/LanguageSyncDialog';
 import { MonacoEditorComponent } from './components/common/MonacoEditorComponent';
 import { contextMenuStateManager } from './components/events/ContextMenuState';
+import { AnimationFrameTask } from './utils/AnimationFrameTask';
+import { ResizeObserverBinding } from './utils/ResizeObserverBinding';
 import { EventsEditorComponent } from './components/events/EventsEditorComponent';
+
+const EDITOR_SUMMARY_EVENTS: readonly EditorChangeEventType[] = [
+	EditorChangeEvents.DOCUMENT_UPDATED,
+	EditorChangeEvents.FORMAT_UPDATED,
+	EditorChangeEvents.EVENT_ADDED,
+	EditorChangeEvents.EVENT_REMOVED,
+	EditorChangeEvents.EVENTS_REPLACED,
+];
 
 interface AppProps {
 	editor: CgEventsEditor;
@@ -46,20 +57,23 @@ interface AppState {
 export class App extends React.Component<AppProps, AppState> {
 	private headerRef = React.createRef<HTMLElement>();
 	private mainRef = React.createRef<HTMLElement>();
+	private jsonEditorRef = React.createRef<MonacoEditorComponent>();
 	private headerHeight = 0;
 	private navOffsetPx = -1;
 	private mainScrollbarWidth = 0;
-	private headerObserver: ResizeObserver | null = null;
-	private mainContentObserver: ResizeObserver | null = null;
-	private mainContentElement: Element | null = null;
+	private readonly headerResizeBinding = new ResizeObserverBinding(() => {
+		this.updateHeaderHeight();
+		this.syncNavOffsetFromState();
+	});
+	private readonly mainContentResizeBinding = new ResizeObserverBinding(() => this.handleMainContentResize());
 	private lastMainScrollTop = 0;
 	private pendingMainScrollTop: number | null = null;
-	private scrollRafId: number | null = null;
-	private loadingRafId: number | null = null;
-	private loadingRafIdSecond: number | null = null;
-	private mainResizeRafId: number | null = null;
-	private toolbarShiftRafId: number | null = null;
-	private toolbarShiftRafIdSecond: number | null = null;
+	private readonly scrollFrame = new AnimationFrameTask();
+	private readonly mainResizeFrame = new AnimationFrameTask();
+	private readonly loadingFrame = new AnimationFrameTask();
+	private readonly loadingSecondFrame = new AnimationFrameTask();
+	private readonly toolbarShiftFrame = new AnimationFrameTask();
+	private readonly toolbarShiftSecondFrame = new AnimationFrameTask();
 	private editorListenersAttached = false;
 
 	constructor(props: AppProps) {
@@ -82,12 +96,10 @@ export class App extends React.Component<AppProps, AppState> {
 			audioVolume: getAudioVolume(),
 			audioMuted: false,
 		};
-		this.handleEditAsJson = this.handleEditAsJson.bind(this);
-		this.handleSave = this.handleSave.bind(this);
 	}
 
 	componentDidMount(): void {
-		msgHandler.on(IncomingMessageType.LANGUAGE_SYNC, this.handleLanguageSync, this);
+		msgHandler.onIncoming(IncomingMessageType.LANGUAGE_SYNC, this.handleLanguageSync);
 		onLanguageChange(this.handleLanguageChanged);
 		this.attachEditorListeners();
 
@@ -96,46 +108,26 @@ export class App extends React.Component<AppProps, AppState> {
 		this.ensureMainContentObserver();
 		this.updateMainScrollbarWidth();
 		this.syncNavOffsetFromState();
-		winEE.on('resize', this.handleWindowResize, this);
-		winEE.on('scroll', this.handleWindowScroll, this);
+		winEE.on('resize', this.handleWindowResize);
+		winEE.on('scroll', this.handleWindowScroll);
+		winEE.on('keydown', this.handleGlobalKeyDown);
 		this.scheduleLoadingReveal();
 	}
 
 	componentWillUnmount(): void {
 		this.detachEditorListeners(this.props.editor);
-		this.headerObserver?.disconnect();
-		this.headerObserver = null;
-		this.mainContentObserver?.disconnect();
-		this.mainContentObserver = null;
-		this.mainContentElement = null;
-		if (this.scrollRafId !== null) {
-			cancelAnimationFrame(this.scrollRafId);
-			this.scrollRafId = null;
-		}
-		if (this.loadingRafId !== null) {
-			cancelAnimationFrame(this.loadingRafId);
-			this.loadingRafId = null;
-		}
-		if (this.loadingRafIdSecond !== null) {
-			cancelAnimationFrame(this.loadingRafIdSecond);
-			this.loadingRafIdSecond = null;
-		}
-		if (this.mainResizeRafId !== null) {
-			cancelAnimationFrame(this.mainResizeRafId);
-			this.mainResizeRafId = null;
-		}
-		if (this.toolbarShiftRafId !== null) {
-			cancelAnimationFrame(this.toolbarShiftRafId);
-			this.toolbarShiftRafId = null;
-		}
-		if (this.toolbarShiftRafIdSecond !== null) {
-			cancelAnimationFrame(this.toolbarShiftRafIdSecond);
-			this.toolbarShiftRafIdSecond = null;
-		}
-		winEE.off('resize', this.handleWindowResize, this);
-		winEE.off('scroll', this.handleWindowScroll, this);
+		this.headerResizeBinding.disconnect();
+		this.mainContentResizeBinding.disconnect();
+		this.scrollFrame.cancel();
+		this.loadingFrame.cancel();
+		this.loadingSecondFrame.cancel();
+		this.mainResizeFrame.cancel();
+		this.cancelToolbarShiftFrames();
+		winEE.off('resize', this.handleWindowResize);
+		winEE.off('scroll', this.handleWindowScroll);
+		winEE.off('keydown', this.handleGlobalKeyDown);
 		offLanguageChange(this.handleLanguageChanged);
-		msgHandler.off(IncomingMessageType.LANGUAGE_SYNC, this.handleLanguageSync, this);
+		msgHandler.offIncoming(IncomingMessageType.LANGUAGE_SYNC, this.handleLanguageSync);
 	}
 
 	componentDidUpdate(prevProps: AppProps, prevState: AppState): void {
@@ -201,12 +193,9 @@ export class App extends React.Component<AppProps, AppState> {
 		}
 		this.editorListenersAttached = true;
 		const editor = this.props.editor;
-		editor.on(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated, this);
-		editor.on(EditorChangeEvents.FORMAT_UPDATED, this.handleFormatUpdated, this);
-		editor.on(EditorChangeEvents.EVENT_ADDED, this.handleEventAdded, this);
-		editor.on(EditorChangeEvents.EVENT_REMOVED, this.handleEventRemoved, this);
-		editor.on(EditorChangeEvents.EVENTS_REORDERED, this.handleEventsReordered, this);
-		editor.on(EditorChangeEvents.EVENTS_REPLACED, this.handleEventsReplaced, this);
+		for (const eventType of EDITOR_SUMMARY_EVENTS) {
+			editor.on(eventType, this.handleEditorSummaryChange);
+		}
 	}
 
 	private detachEditorListeners(editor: CgEventsEditor): void {
@@ -214,95 +203,34 @@ export class App extends React.Component<AppProps, AppState> {
 			return;
 		}
 		this.editorListenersAttached = false;
-		editor.off(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated, this);
-		editor.off(EditorChangeEvents.FORMAT_UPDATED, this.handleFormatUpdated, this);
-		editor.off(EditorChangeEvents.EVENT_ADDED, this.handleEventAdded, this);
-		editor.off(EditorChangeEvents.EVENT_REMOVED, this.handleEventRemoved, this);
-		editor.off(EditorChangeEvents.EVENTS_REORDERED, this.handleEventsReordered, this);
-		editor.off(EditorChangeEvents.EVENTS_REPLACED, this.handleEventsReplaced, this);
+		for (const eventType of EDITOR_SUMMARY_EVENTS) {
+			editor.off(eventType, this.handleEditorSummaryChange);
+		}
 	}
 
-	private handleDocumentUpdated = () => {
-		this.syncEditorSummary();
-	};
-
-	private handleFormatUpdated = () => {
-		this.syncEditorSummary();
-	};
-
-	private handleEventAdded = () => {
-		this.syncEditorSummary();
-	};
-
-	private handleEventRemoved = () => {
-		this.syncEditorSummary();
-	};
-
-	private handleEventsReordered = () => {
-		this.syncEditorSummary();
-	};
-
-	private handleEventsReplaced = () => {
+	private handleEditorSummaryChange = () => {
 		this.syncEditorSummary();
 	};
 
 	private ensureHeaderObserver() {
 		const header = this.headerRef.current;
-		if (!header) return;
+		if (!header) {
+			this.headerResizeBinding.observe(null);
+			return;
+		}
 
 		this.updateHeaderHeight();
 		this.syncNavOffsetFromState();
-		if (this.headerObserver) return;
-		if (typeof ResizeObserver === 'undefined') return;
-
-		this.headerObserver = new ResizeObserver(() => {
-			this.updateHeaderHeight();
-			this.syncNavOffsetFromState();
-		});
-		this.headerObserver.observe(header);
+		this.headerResizeBinding.observe(header);
 	}
 
 	private handleMainContentResize = () => {
-		if (this.mainResizeRafId !== null) {
-			return;
-		}
-		this.mainResizeRafId = requestAnimationFrame(() => {
-			this.mainResizeRafId = null;
-			this.updateMainScrollbarWidth();
-		});
+		this.mainResizeFrame.schedule(() => this.updateMainScrollbarWidth());
 	};
 
-	private detachMainContentObserver() {
-		if (!this.mainContentObserver || !this.mainContentElement) {
-			return;
-		}
-		this.mainContentObserver.unobserve(this.mainContentElement);
-		this.mainContentElement = null;
-	}
-
 	private ensureMainContentObserver() {
-		const main = this.mainRef.current;
-		if (!main) {
-			this.detachMainContentObserver();
-			return;
-		}
-		if (typeof ResizeObserver === 'undefined') {
-			return;
-		}
-		const content = main.firstElementChild;
-		if (!content) {
-			this.detachMainContentObserver();
-			return;
-		}
-		if (!this.mainContentObserver) {
-			this.mainContentObserver = new ResizeObserver(this.handleMainContentResize);
-		}
-		if (this.mainContentElement === content) {
-			return;
-		}
-		this.detachMainContentObserver();
-		this.mainContentElement = content;
-		this.mainContentObserver.observe(content);
+		const content = this.mainRef.current?.firstElementChild ?? null;
+		this.mainContentResizeBinding.observe(content);
 	}
 
 	private updateHeaderHeight() {
@@ -326,6 +254,46 @@ export class App extends React.Component<AppProps, AppState> {
 		this.updateHeaderHeight();
 		this.syncNavOffsetFromState();
 		this.updateMainScrollbarWidth();
+	};
+
+	private isEditableTarget(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) {
+			return false;
+		}
+		if (target.isContentEditable) {
+			return true;
+		}
+		return Boolean(target.closest('input, textarea, select, option, [contenteditable], .monaco-editor'));
+	}
+
+	private isPanelOpen(): boolean {
+		return document.body.classList.contains('cgenh-has-modal-open') || document.querySelector('.modal.show, .modal-backdrop.show') !== null;
+	}
+
+	private handleGlobalKeyDown = (event: KeyboardEvent) => {
+		const action = resolveAppGlobalShortcut({
+			key: event.key,
+			isComposing: event.isComposing,
+			defaultPrevented: event.defaultPrevented,
+			ctrlKey: event.ctrlKey,
+			metaKey: event.metaKey,
+			altKey: event.altKey,
+			shiftKey: event.shiftKey,
+			panelOpen: this.isPanelOpen(),
+			editableTarget: this.isEditableTarget(event.target),
+		});
+		if (!action) return;
+
+		event.preventDefault();
+		if (action === 'save') {
+			this.handleSave();
+			return;
+		}
+		if (action === 'undo') {
+			this.props.editor.undo();
+			return;
+		}
+		this.props.editor.redo();
 	};
 
 	private isEventsToolbarSticky(navOffset: number): boolean {
@@ -361,15 +329,8 @@ export class App extends React.Component<AppProps, AppState> {
 		}
 		const root = document.documentElement;
 		const shouldAnimateShift = animateToolbarShift && this.isEventsToolbarSticky(prev);
+		this.cancelToolbarShiftFrames();
 		if (!shouldAnimateShift) {
-			if (this.toolbarShiftRafId !== null) {
-				cancelAnimationFrame(this.toolbarShiftRafId);
-				this.toolbarShiftRafId = null;
-			}
-			if (this.toolbarShiftRafIdSecond !== null) {
-				cancelAnimationFrame(this.toolbarShiftRafIdSecond);
-				this.toolbarShiftRafIdSecond = null;
-			}
 			root.style.removeProperty('--cgenh-toolbar-shift-duration');
 			root.style.setProperty('--cgenh-toolbar-shift', '0px');
 		}
@@ -377,29 +338,24 @@ export class App extends React.Component<AppProps, AppState> {
 			const delta = prev - next;
 			root.style.setProperty('--cgenh-toolbar-shift-duration', '0ms');
 			root.style.setProperty('--cgenh-toolbar-shift', `${delta}px`);
-			if (this.toolbarShiftRafId !== null) {
-				cancelAnimationFrame(this.toolbarShiftRafId);
-				this.toolbarShiftRafId = null;
-			}
-			if (this.toolbarShiftRafIdSecond !== null) {
-				cancelAnimationFrame(this.toolbarShiftRafIdSecond);
-				this.toolbarShiftRafIdSecond = null;
-			}
 		}
 		this.navOffsetPx = next;
 		root.style.setProperty('--nav-offset', `${next}px`);
 		if (shouldAnimateShift) {
 			root.getBoundingClientRect();
-			this.toolbarShiftRafId = requestAnimationFrame(() => {
-				this.toolbarShiftRafId = null;
+			this.toolbarShiftFrame.schedule(() => {
 				root.style.removeProperty('--cgenh-toolbar-shift-duration');
 				root.getBoundingClientRect();
-				this.toolbarShiftRafIdSecond = requestAnimationFrame(() => {
-					this.toolbarShiftRafIdSecond = null;
+				this.toolbarShiftSecondFrame.schedule(() => {
 					root.style.setProperty('--cgenh-toolbar-shift', '0px');
 				});
 			});
 		}
+	}
+
+	private cancelToolbarShiftFrames(): void {
+		this.toolbarShiftFrame.cancel();
+		this.toolbarShiftSecondFrame.cancel();
 	}
 
 	private syncNavOffsetFromState() {
@@ -407,7 +363,6 @@ export class App extends React.Component<AppProps, AppState> {
 	}
 
 	private handleLanguageChanged = () => {
-		// Force re-render when language changes
 		this.forceUpdate();
 	};
 
@@ -491,13 +446,8 @@ export class App extends React.Component<AppProps, AppState> {
 		});
 	};
 
-	private isValidJsonText(text: string): boolean {
-		try {
-			JSON.parse(text);
-			return true;
-		} catch {
-			return false;
-		}
+	private getLiveJsonText(): string {
+		return this.jsonEditorRef.current?.getValue() ?? this.state.jsonText;
 	}
 
 	private setMode(next: 'visual' | 'json') {
@@ -510,32 +460,33 @@ export class App extends React.Component<AppProps, AppState> {
 			this.setState({ mode: 'json', jsonText, jsonError: undefined, navCollapsed: false });
 			return;
 		}
-		const currentEntry = this.props.editor.getCurrentEntry();
-		const fallbackText = currentEntry ? JSON.stringify(currentEntry.json, null, 2) : this.state.jsonText;
-		if (!this.isValidJsonText(this.state.jsonText)) {
-			this.setState({ mode: 'visual', jsonText: fallbackText, jsonError: undefined });
-			return;
-		}
-		const error = this.props.editor.applyJsonText(this.state.jsonText);
+		const liveJsonText = this.getLiveJsonText();
+		const error = this.props.editor.applyJsonText(liveJsonText);
 		if (error) {
-			this.setState({ mode: 'visual', jsonText: fallbackText, jsonError: undefined });
+			this.setState({
+				mode: 'json',
+				jsonText: liveJsonText,
+				jsonError: error.message || String(error),
+			});
 			return;
 		}
-		this.setState({ mode: 'visual', jsonError: undefined });
+		this.setState({
+			mode: 'visual',
+			jsonText: liveJsonText,
+			jsonError: undefined,
+		});
 	}
 
-	private handleEditAsJson() {
+	private handleEditAsJson = () => {
 		this.setMode('json');
-	}
+	};
 
 	private handleWindowScroll = () => {
 		contextMenuStateManager.closeAllContextMenus();
 		const scrollingElement = document.scrollingElement;
 		const scrollTop = scrollingElement instanceof HTMLElement ? scrollingElement.scrollTop : window.scrollY;
 		this.pendingMainScrollTop = scrollTop;
-		if (this.scrollRafId !== null) return;
-		this.scrollRafId = requestAnimationFrame(() => {
-			this.scrollRafId = null;
+		this.scrollFrame.schedule(() => {
 			const nextScrollTop = this.pendingMainScrollTop ?? 0;
 			this.pendingMainScrollTop = null;
 			this.applyNavCollapseFromScroll(nextScrollTop);
@@ -548,53 +499,26 @@ export class App extends React.Component<AppProps, AppState> {
 	}
 
 	private applyNavCollapseFromScroll(scrollTop: number) {
-		if (this.state.mode !== 'visual') return;
-
-		if (scrollTop <= 2) {
-			this.lastMainScrollTop = scrollTop;
-			if (this.state.navCollapsed) {
-				this.setState({ navCollapsed: false });
-			}
-			return;
-		}
-
-		const headerHeight = Math.max(0, this.headerHeight);
-		if (scrollTop < headerHeight) {
-			this.lastMainScrollTop = scrollTop;
-			if (this.state.navCollapsed) {
-				this.setNavCollapsed(false);
-			}
-			return;
-		}
-
-		const last = this.lastMainScrollTop;
-		this.lastMainScrollTop = scrollTop;
-
-		const delta = scrollTop - last;
-		const hideThreshold = 6;
-		const showThreshold = 1;
-
-		if (delta > hideThreshold) {
-			this.setNavCollapsed(true);
-			return;
-		}
-
-		if (delta < -showThreshold) {
-			this.setNavCollapsed(false);
-		}
+		const next = resolveAppNavScrollState({
+			mode: this.state.mode,
+			scrollTop,
+			lastScrollTop: this.lastMainScrollTop,
+			headerHeight: this.headerHeight,
+			navCollapsed: this.state.navCollapsed,
+		});
+		this.lastMainScrollTop = next.lastScrollTop;
+		this.setNavCollapsed(next.navCollapsed);
 	}
 
 	private scheduleLoadingReveal() {
 		if (!this.state.showLoading || !this.state.hasDocument) {
 			return;
 		}
-		if (this.loadingRafId !== null || this.loadingRafIdSecond !== null) {
+		if (this.loadingFrame.scheduled || this.loadingSecondFrame.scheduled) {
 			return;
 		}
-		this.loadingRafId = requestAnimationFrame(() => {
-			this.loadingRafId = null;
-			this.loadingRafIdSecond = requestAnimationFrame(() => {
-				this.loadingRafIdSecond = null;
+		this.loadingFrame.schedule(() => {
+			this.loadingSecondFrame.schedule(() => {
 				if (!this.state.showLoading || !this.state.hasDocument) {
 					return;
 				}
@@ -603,12 +527,16 @@ export class App extends React.Component<AppProps, AppState> {
 		});
 	}
 
-	private handleSave() {
+	private handleSave = () => {
 		if (this.state.mode === 'json') {
-			const err = this.props.editor.applyJsonText(this.state.jsonText);
+			const jsonText = this.getLiveJsonText();
+			const err = this.props.editor.applyJsonText(jsonText);
 			if (err) {
-				this.setState({ jsonError: err.message });
+				this.setState({ jsonText, jsonError: err.message });
 				return;
+			}
+			if (jsonText !== this.state.jsonText || this.state.jsonError) {
+				this.setState({ jsonText, jsonError: undefined });
 			}
 		}
 		const entry = this.props.editor.getCurrentEntry();
@@ -616,7 +544,7 @@ export class App extends React.Component<AppProps, AppState> {
 			return;
 		}
 		msgHandler.send(OutgoingMessageType.SAVE, entry);
-	}
+	};
 
 	private handleSetMode = (mode: 'visual' | 'json') => {
 		this.setMode(mode);
@@ -676,7 +604,6 @@ export class App extends React.Component<AppProps, AppState> {
 
 		const showLoading = this.state.showLoading || !this.state.hasDocument;
 
-		// Render the UI as soon as the events JSON is available.
 		if (!this.state.hasDocument) {
 			return <AppLoadingScreen overlay={false} />;
 		}
@@ -716,6 +643,7 @@ export class App extends React.Component<AppProps, AppState> {
 				<main ref={this.mainRef} className={mainClassName}>
 					{this.state.mode === 'json' ? (
 						<MonacoEditorComponent
+							ref={this.jsonEditorRef}
 							value={this.state.jsonText}
 							error={this.state.jsonError}
 							onChange={this.handleJsonTextChange}

@@ -56,7 +56,7 @@
 	}
 }
 
-/* Hover-based dropdown */
+/* Hover/focus-based dropdown */
 .cgenh-hover-dropdown {
 	position: relative;
 }
@@ -76,7 +76,8 @@
 		visibility 0s var(--cgenh-motion-fast, 150ms);
 }
 
-.cgenh-hover-dropdown:hover>.dropdown-menu {
+.cgenh-hover-dropdown:hover>.dropdown-menu,
+.cgenh-hover-dropdown:focus-within>.dropdown-menu {
 	display: block;
 	opacity: 1;
 	visibility: visible;
@@ -226,7 +227,8 @@
 	transition: width var(--cgenh-motion-fast, 150ms) ease;
 }
 
-.cgenh-volume-container:hover .cgenh-volume-slider-wrapper {
+.cgenh-volume-container:hover .cgenh-volume-slider-wrapper,
+.cgenh-volume-container:focus-within .cgenh-volume-slider-wrapper {
 	width: 120px;
 }
 

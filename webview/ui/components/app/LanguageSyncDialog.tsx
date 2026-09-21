@@ -1,5 +1,6 @@
 import React from 'react';
 import { translation } from '../../../trans/Trans';
+import { acquireModalLock } from '../../utils/modalLock';
 
 interface LanguageSyncDialogProps {
 	open: boolean;
@@ -9,51 +10,54 @@ interface LanguageSyncDialogProps {
 }
 
 export class LanguageSyncDialog extends React.Component<LanguageSyncDialogProps> {
-	private readonly handleBackdropMouseDown = this.handleBackdropMouseDownInternal.bind(this);
-	private readonly handleDialogMouseDown = this.handleDialogMouseDownInternal.bind(this);
-	private readonly handleDontAskAgainChange = this.handleDontAskAgainChangeInternal.bind(this);
-	private readonly handleConfirmYes = this.handleConfirmYesInternal.bind(this);
-	private readonly handleConfirmNo = this.handleConfirmNoInternal.bind(this);
+	private releaseModalLock: (() => void) | null = null;
 
-	private handleBackdropMouseDownInternal(event: React.MouseEvent<HTMLDivElement>) {
-		if (event.target === event.currentTarget) {
-			this.props.onConfirm(false);
-		}
-	}
+	private readonly handleBackdropMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+		if (event.target === event.currentTarget) this.props.onConfirm(false);
+	};
 
-	private handleDialogMouseDownInternal(event: React.MouseEvent<HTMLDivElement>) {
+	private readonly handleDialogMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
 		event.stopPropagation();
-	}
+	};
 
-	private handleDontAskAgainChangeInternal(event: React.ChangeEvent<HTMLInputElement>) {
+	private readonly handleDontAskAgainChange = (event: React.ChangeEvent<HTMLInputElement>) => {
 		this.props.onDontAskAgainChange(event.target.checked);
-	}
+	};
 
-	private handleConfirmYesInternal() {
+	private readonly handleConfirmYes = () => {
 		this.props.onConfirm(true);
+	};
+
+	private readonly handleConfirmNo = () => {
+		this.props.onConfirm(false);
+	};
+
+	componentDidMount(): void {
+		if (this.props.open) this.releaseModalLock = acquireModalLock();
 	}
 
-	private handleConfirmNoInternal() {
-		this.props.onConfirm(false);
+	componentDidUpdate(prevProps: LanguageSyncDialogProps): void {
+		if (prevProps.open === this.props.open) return;
+		if (this.props.open) {
+			this.releaseModalLock = this.releaseModalLock ?? acquireModalLock();
+			return;
+		}
+		this.releaseModalLock?.();
+		this.releaseModalLock = null;
+	}
+
+	componentWillUnmount(): void {
+		this.releaseModalLock?.();
+		this.releaseModalLock = null;
 	}
 
 	render() {
-		if (!this.props.open) {
-			return null;
-		}
+		if (!this.props.open) return null;
 
 		return (
 			<>
-				<div
-					className="modal show d-block"
-					role="dialog"
-					onMouseDown={this.handleBackdropMouseDown}
-				>
-					<div
-						className="modal-dialog modal-dialog-centered"
-						role="document"
-						onMouseDown={this.handleDialogMouseDown}
-					>
+				<div className="modal show d-block" role="dialog" onMouseDown={this.handleBackdropMouseDown}>
+					<div className="modal-dialog modal-dialog-centered" role="document" onMouseDown={this.handleDialogMouseDown}>
 						<div className="modal-content">
 							<div className="modal-header">
 								<h5 className="modal-title">{translation.app.syncLanguage.title.getTrans()}</h5>
@@ -74,18 +78,10 @@ export class LanguageSyncDialog extends React.Component<LanguageSyncDialogProps>
 								</div>
 							</div>
 							<div className="modal-footer">
-								<button
-									type="button"
-									className="btn btn-outline-secondary"
-									onClick={this.handleConfirmNo}
-								>
+								<button type="button" className="btn btn-outline-secondary" onClick={this.handleConfirmNo}>
 									{translation.common.no.getTrans()}
 								</button>
-								<button
-									type="button"
-									className="btn btn-primary"
-									onClick={this.handleConfirmYes}
-								>
+								<button type="button" className="btn btn-primary" onClick={this.handleConfirmYes}>
 									{translation.common.yes.getTrans()}
 								</button>
 							</div>
@@ -97,4 +93,3 @@ export class LanguageSyncDialog extends React.Component<LanguageSyncDialogProps>
 		);
 	}
 }
-

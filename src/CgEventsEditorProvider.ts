@@ -22,17 +22,15 @@ export class CgEventsEditorProvider implements CustomTextEditorProvider {
 
 	public static setupWatcher(): FileSystemWatcher[] {
 		const eventsWatcher = workspace.createFileSystemWatcher('**/*.events');
-		eventsWatcher.onDidCreate(async uri => {
-			const file = await workspace.fs.readFile(uri);
-			if (!file.byteLength) {
-				return injectDefaultJsonToEvents(uri);
-			}
+		eventsWatcher.onDidCreate(uri => {
+			void injectDefaultJsonToEvents(uri, true).catch(error => {
+				console.error(`Unable to initialize events file at ${uri.toString()}:`, error);
+			});
 		});
 		return [eventsWatcher];
 	}
 
 	protected readonly _context: ExtensionContext;
-
 	public readonly uri: Uri;
 
 	constructor(context: ExtensionContext) {

@@ -1,13 +1,45 @@
-import { ICgEventLogicBlock } from '@shared';
+import { ICgEventLogicBlock, isCgEventsDocument } from '@shared';
 import { editor } from '../../../editor/CgEventsEditor';
 import { EventBlockType } from '../../../editor/eventBlockTypes';
 import { translation } from '../../../trans/Trans';
+import { normalizeLogicBlockList } from './LogicBlockData';
 import type { SelectedItem } from './SelectionState';
 import { selectionStateManager } from './SelectionState';
+
+interface LogicSelectionSnapshot {
+	activeSection?: EventBlockType;
+	entries: Array<{ eventId: string; index: number }>;
+}
 
 function getEventOrder(eventId: string): number {
 	const index = editor.getEventIndex(eventId);
 	return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function captureSelectionSnapshot(): LogicSelectionSnapshot {
+	const entries = selectionStateManager.getSelection()
+		.map(({ eventId, index }) => ({ eventId, index }))
+		.sort((a, b) => a.eventId.localeCompare(b.eventId) || a.index - b.index);
+	return { activeSection: selectionStateManager.getActiveSection(), entries };
+}
+
+function isSelectionSnapshotCurrent(snapshot: LogicSelectionSnapshot): boolean {
+	const current = captureSelectionSnapshot();
+	if (current.activeSection !== snapshot.activeSection || current.entries.length !== snapshot.entries.length) return false;
+	for (let i = 0; i < snapshot.entries.length; i++) {
+		const before = snapshot.entries[i];
+		const after = current.entries[i];
+		if (before.eventId !== after.eventId || before.index !== after.index) return false;
+	}
+	return true;
+}
+
+function entriesStillMatch(blockType: EventBlockType, entries: SelectedItem[]): boolean {
+	for (const entry of entries) {
+		if (entry.blockType !== blockType || !entry.block) return false;
+		if (editor.getLogicBlock(entry.eventId, blockType, entry.index) !== entry.block) return false;
+	}
+	return true;
 }
 
 export function sortLogicEntriesByEventOrder<T extends { eventId: string; index: number }>(entries: ReadonlyArray<T>): T[] {
@@ -72,7 +104,7 @@ function getSelectionDisabledState(selectionEntries: SelectedItem[]): { hasEnabl
 	for (const entry of selectionEntries) {
 		if (!entry.block) continue;
 		const data = entry.block.data;
-		const disabled = data ? data['disabled'] === true : false;
+		const disabled = Boolean(data?.['disabled']);
 		if (disabled) {
 			hasDisabled = true;
 		} else {
@@ -94,29 +126,36 @@ export function getToggleDisableLabel(selectionEntries: SelectedItem[], isList: 
 	return isList ? translation.state.enableDisableList.getTrans() : translation.state.enableDisable.getTrans();
 }
 
-export function removeLogicEntries(blockType: EventBlockType, selectionEntries: SelectedItem[]) {
-	const entries: Array<{ eventId: string; index: number }> = [];
-	for (const item of selectionEntries) {
-		if (item.blockType !== blockType) continue;
-		entries.push({ eventId: item.eventId, index: item.index });
-	}
-	if (entries.length > 0) {
-		editor.removeLogicSelection(blockType, entries);
-	}
-	selectionStateManager.clearSelection();
-}
-
-export function toggleDisabledForEntries(blockType: EventBlockType, selectionEntries: SelectedItem[]) {
+export function getLogicSelectionTargets(
+	blockType: EventBlockType,
+	selectionEntries: readonly SelectedItem[],
+): Array<{ eventId: string; index: number }> {
 	const entries: Array<{ eventId: string; index: number }> = [];
 	for (const entry of selectionEntries) {
 		if (entry.blockType !== blockType) continue;
 		entries.push({ eventId: entry.eventId, index: entry.index });
 	}
-	if (entries.length > 0) {
-		editor.toggleLogicDisabledSelection(blockType, entries);
-	}
+	return entries;
+}
 
+export function removeLogicEntries(blockType: EventBlockType, selectionEntries: SelectedItem[]): boolean {
+	const entries = getLogicSelectionTargets(blockType, selectionEntries);
+	if (entries.length === 0) {
+		return false;
+	}
+	editor.removeLogicSelection(blockType, entries);
 	selectionStateManager.clearSelection();
+	return true;
+}
+
+export function toggleDisabledForEntries(blockType: EventBlockType, selectionEntries: SelectedItem[]): boolean {
+	const entries = getLogicSelectionTargets(blockType, selectionEntries);
+	if (entries.length === 0) {
+		return false;
+	}
+	editor.toggleLogicDisabledSelection(blockType, entries);
+	selectionStateManager.clearSelection();
+	return true;
 }
 
 export async function copyEntriesToClipboard(
@@ -130,6 +169,7 @@ export async function copyEntriesToClipboard(
 		.filter((block): block is ICgEventLogicBlock => Boolean(block));
 	if (!blocks.length) return;
 
+	const selectionSnapshot = captureSelectionSnapshot();
 	const payload = { type: blockType, blocks };
 	const text = JSON.stringify(payload, null, 2);
 
@@ -155,18 +195,24 @@ export async function copyEntriesToClipboard(
 		document.body.appendChild(ta);
 		ta.select();
 		try {
-			document.execCommand('copy');
-			copied = true;
+			copied = document.execCommand('copy');
+		} catch {
+			copied = false;
 		} finally {
 			document.body.removeChild(ta);
 		}
 	}
 
-	if (copied && options?.removeAfterCopy) {
-		removeLogicEntries(blockType, sortedEntries);
+	if (!copied) return;
+	if (options?.removeAfterCopy) {
+		if (!entriesStillMatch(blockType, sortedEntries)) return;
+		const entries = sortedEntries.map(({ eventId, index }) => ({ eventId, index }));
+		editor.removeLogicSelection(blockType, entries);
 	}
 
-	selectionStateManager.clearSelection();
+	if (isSelectionSnapshotCurrent(selectionSnapshot)) {
+		selectionStateManager.clearSelection();
+	}
 }
 
 export function extractAllowedBlocks(text: string, blockType: EventBlockType): ICgEventLogicBlock[] {
@@ -182,14 +228,29 @@ export function extractAllowedBlocks(text: string, blockType: EventBlockType): I
 	} else if (Array.isArray(parsed)) {
 		blocks = parsed;
 	}
-	if (!blocks.length) return [];
+	const candidateEvent = {
+		id: 'clipboard',
+		actions: blockType === 'action' ? blocks : [],
+		checks: blockType === 'check' ? blocks : [],
+		triggers: blockType === 'trigger' ? blocks : [],
+	};
+	if (!isCgEventsDocument({ config: {}, events: [candidateEvent] })) return [];
+
+	const normalized = normalizeLogicBlockList(blocks);
+	if (!normalized?.length) return [];
 	return blocks.map((block) => ({
-		type: typeof block?.type === 'string' ? block.type : '',
-		data: block?.data ?? {},
+		type: block.type,
+		data: block.data ?? {},
 	}));
 }
 
-export async function pasteAt(eventId: string, blockType: EventBlockType, targetIndex: number) {
+export async function pasteAt(
+	eventId: string,
+	blockType: EventBlockType,
+	targetIndex: number,
+	isRequestCurrent: () => boolean = () => true,
+): Promise<boolean> {
+	const targetBlocks = editor.getLogicBlocks(eventId, blockType);
 	let text = '';
 	if (navigator?.clipboard?.readText) {
 		try {
@@ -198,17 +259,32 @@ export async function pasteAt(eventId: string, blockType: EventBlockType, target
 			// fall back to prompt
 		}
 	}
+	if (!isRequestCurrent()) {
+		return false;
+	}
 	if (!text) {
 		text = window.prompt(translation.list.pastePrompt.getTrans()) ?? '';
 	}
-	if (!text.trim()) return;
+	if (!text.trim() || !isRequestCurrent()) {
+		return false;
+	}
 	try {
 		const allowed = extractAllowedBlocks(text, blockType);
-		if (!allowed.length) return;
+		if (!allowed.length) {
+			return false;
+		}
+		if (editor.getLogicBlocks(eventId, blockType) !== targetBlocks) {
+			return false;
+		}
 		editor.insertLogicBlocks(eventId, blockType, allowed, targetIndex);
+		if (editor.getLogicBlocks(eventId, blockType) === targetBlocks) {
+			return false;
+		}
 		selectionStateManager.clearSelection();
+		return true;
 	} catch {
 		// ignore cgenh-invalid JSON
+		return false;
 	}
 }
 
