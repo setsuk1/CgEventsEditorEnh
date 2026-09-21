@@ -1,9 +1,23 @@
 import React from 'react';
-import { editor } from '../../../editor/CgEventsEditor';
+import {
+	editor,
+	EditorChangeEvents,
+	type EditorChangeEventPayload,
+	type EditorChangeEventType,
+} from '../../../editor/CgEventsEditor';
 import { winEE } from '../../../msg/WindowEventEmitter';
 import { dragStateManager } from './DragState';
 import { EventComponent } from './EventComponent';
 import { eventCardUiStateStore } from './EventCardUiStateStore';
+import { AnimationFrameTask } from '../../utils/AnimationFrameTask';
+import { stringArraysEqual } from './EventsDisplay';
+import {
+	buildVirtualListLayout,
+	estimateVirtualEventHeight,
+	computeVirtualListPadding,
+	computeVirtualListRange,
+	resolveVirtualResizeBaselineHeight,
+} from './VirtualListMath';
 
 interface VirtualizedEventsListProps {
 	scrollContainerRef: React.RefObject<HTMLElement>;
@@ -23,12 +37,23 @@ interface MeasuredHeightEntry {
 	collapsed: boolean;
 }
 
-const EVENT_HEADER_ESTIMATE_PX = 72;
-const SECTION_HEADER_ESTIMATE_PX = 54;
-const SECTION_BODY_ESTIMATE_PX = 56;
-const LOGIC_ITEM_ESTIMATE_PX = 64;
 const INITIAL_RENDER_COUNT = 18;
 const OVERSCAN_COUNT = 6;
+const LOGIC_LAYOUT_CHANGE_EVENTS: readonly EditorChangeEventType[] = [
+	EditorChangeEvents.ACTION_ADDED,
+	EditorChangeEvents.ACTION_UPDATED,
+	EditorChangeEvents.ACTION_REMOVED,
+	EditorChangeEvents.ACTION_MOVED,
+	EditorChangeEvents.CHECK_ADDED,
+	EditorChangeEvents.CHECK_UPDATED,
+	EditorChangeEvents.CHECK_REMOVED,
+	EditorChangeEvents.CHECK_MOVED,
+	EditorChangeEvents.TRIGGER_ADDED,
+	EditorChangeEvents.TRIGGER_UPDATED,
+	EditorChangeEvents.TRIGGER_REMOVED,
+	EditorChangeEvents.TRIGGER_MOVED,
+];
+
 
 export class VirtualizedEventsList extends React.Component<VirtualizedEventsListProps, VirtualizedEventsListState> {
 	private containerRef: React.RefObject<HTMLDivElement> = React.createRef();
@@ -37,7 +62,7 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 	private scrollResizeObserver: ResizeObserver | null = null;
 	private itemResizeObserver: ResizeObserver | null = null;
 	private windowListenersAttached = false;
-	private rafId: number | null = null;
+	private readonly updateFrame = new AnimationFrameTask();
 	private cacheDirty = true;
 	private gapPx = 0;
 	private totalHeightPx = 0;
@@ -93,15 +118,16 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 		this.rebuildIndexById();
 		this.ensureItemResizeObserver();
 		this.attachWindowListeners();
+		this.attachEditorLayoutListeners();
 		this.attachScrollContainer();
-		dragStateManager.on('change', this.handleDragStateChange, this);
+		dragStateManager.on('change', this.handleDragStateChange);
 		this.scheduleUpdate();
 	}
 
 	componentDidUpdate(prevProps: VirtualizedEventsListProps): void {
 		const prevIds = prevProps.eventIds;
 		const nextIds = this.props.eventIds;
-		const eventIdsChanged = !this.arraysEqual(prevIds, nextIds);
+		const eventIdsChanged = !stringArraysEqual(prevIds, nextIds);
 		if (eventIdsChanged) {
 			this.rebuildIndexById();
 			this.cacheDirty = true;
@@ -128,34 +154,62 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 				this.dragPinnedEventId = null;
 			}
 		}
-		if (prevProps.scrollContainerRef.current !== this.props.scrollContainerRef.current) {
-			this.detachScrollContainer();
-			this.attachScrollContainer();
-		}
+		this.attachScrollContainer();
 		this.scheduleUpdate();
 	}
 
 	componentWillUnmount(): void {
 		this.detachWindowListeners();
+		this.detachEditorLayoutListeners();
 		this.detachScrollContainer();
-		dragStateManager.off('change', this.handleDragStateChange, this);
+		dragStateManager.off('change', this.handleDragStateChange);
 		this.itemResizeObserver?.disconnect();
 		this.itemResizeObserver = null;
-		if (this.rafId !== null) {
-			cancelAnimationFrame(this.rafId);
-			this.rafId = null;
-		}
+		this.updateFrame.cancel();
 		this.elementById.clear();
 		this.idByElement.clear();
 	}
+
+	private attachEditorLayoutListeners(): void {
+		for (const eventType of LOGIC_LAYOUT_CHANGE_EVENTS) {
+			editor.on(eventType, this.handleEditorLayoutChange);
+		}
+		editor.on(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentLayoutChange);
+	}
+
+	private detachEditorLayoutListeners(): void {
+		for (const eventType of LOGIC_LAYOUT_CHANGE_EVENTS) {
+			editor.off(eventType, this.handleEditorLayoutChange);
+		}
+		editor.off(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentLayoutChange);
+	}
+
+	private handleEditorLayoutChange = (payload?: EditorChangeEventPayload) => {
+		const eventId = payload?.eventId;
+		if (!eventId) {
+			return;
+		}
+		this.measuredById.delete(eventId);
+		if (!this.indexById.has(eventId)) {
+			return;
+		}
+		this.cacheDirty = true;
+		this.scheduleUpdate();
+	};
+
+	private handleDocumentLayoutChange = () => {
+		this.measuredById.clear();
+		this.cacheDirty = true;
+		this.scheduleUpdate();
+	};
 
 	private attachWindowListeners(): void {
 		if (this.windowListenersAttached) {
 			return;
 		}
 		this.windowListenersAttached = true;
-		winEE.on('scroll', this.handleScroll, this);
-		winEE.on('resize', this.scheduleUpdate, this);
+		winEE.on('scroll', this.handleScroll);
+		winEE.on('resize', this.scheduleUpdate);
 	}
 
 	private detachWindowListeners(): void {
@@ -163,17 +217,8 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 			return;
 		}
 		this.windowListenersAttached = false;
-		winEE.off('scroll', this.handleScroll, this);
-		winEE.off('resize', this.scheduleUpdate, this);
-	}
-
-	private arraysEqual(a: string[], b: string[]): boolean {
-		if (a === b) return true;
-		if (a.length !== b.length) return false;
-		for (let i = 0; i < a.length; i++) {
-			if (a[i] !== b[i]) return false;
-		}
-		return true;
+		winEE.off('scroll', this.handleScroll);
+		winEE.off('resize', this.scheduleUpdate);
 	}
 
 	private handleDragStateChange = () => {
@@ -340,18 +385,12 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 		this.elementScrollListenerTarget = null;
 	}
 
-	private scheduleUpdate(): void {
+	private scheduleUpdate = (): void => {
 		if (!this.scrollElement) {
 			this.attachScrollContainer();
 		}
-		if (this.rafId !== null) {
-			return;
-		}
-		this.rafId = requestAnimationFrame(() => {
-			this.rafId = null;
-			this.updateVisibleRange();
-		});
-	}
+		this.updateFrame.schedule(() => this.updateVisibleRange());
+	};
 
 	private getScrollTop(scrollElement: HTMLElement): number {
 		if (!this.isDocumentScrollElement(scrollElement)) {
@@ -434,17 +473,13 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 			return;
 		}
 		const ids = this.props.eventIds;
-		const n = ids.length;
-		const prefix = new Array<number>(n + 1);
-		prefix[0] = 0;
-		for (let i = 0; i < n; i++) {
-			const id = ids[i];
-			const baseHeight = this.getEstimatedOrMeasuredHeightPx(id);
-			const outer = baseHeight + (i < n - 1 ? this.gapPx : 0);
-			prefix[i + 1] = prefix[i] + outer;
-		}
-		this.prefixSums = prefix;
-		this.totalHeightPx = prefix[n] ?? 0;
+		const layout = buildVirtualListLayout(
+			ids.length,
+			(index) => this.getEstimatedOrMeasuredHeightPx(ids[index]),
+			this.gapPx,
+		);
+		this.prefixSums = layout.prefixSums;
+		this.totalHeightPx = layout.totalHeight;
 		this.cacheDirty = false;
 	}
 
@@ -455,60 +490,7 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 		if (entry && entry.collapsed === collapsed) {
 			return Math.max(0, entry.height);
 		}
-		if (collapsed) {
-			return EVENT_HEADER_ESTIMATE_PX;
-		}
-		const event = editor.getEventById(eventId);
-		const triggers = event?.triggers?.length ?? 0;
-		const checks = event?.checks?.length ?? 0;
-		const actions = event?.actions?.length ?? 0;
-		const blocks = ui ? ui.blockCollapsed : undefined;
-		const triggerExpanded = blocks ? !blocks.trigger : true;
-		const checkExpanded = blocks ? !blocks.check : true;
-		const actionExpanded = blocks ? !blocks.action : true;
-
-		let expandedSections = 0;
-		let totalItems = 0;
-		if (triggerExpanded) {
-			expandedSections += 1;
-			totalItems += triggers;
-		}
-		if (checkExpanded) {
-			expandedSections += 1;
-			totalItems += checks;
-		}
-		if (actionExpanded) {
-			expandedSections += 1;
-			totalItems += actions;
-		}
-
-		const base = EVENT_HEADER_ESTIMATE_PX + 3 * SECTION_HEADER_ESTIMATE_PX + expandedSections * SECTION_BODY_ESTIMATE_PX;
-		return base + totalItems * LOGIC_ITEM_ESTIMATE_PX;
-	}
-
-	private findIndexAtOffset(offset: number): number {
-		const n = this.props.eventIds.length;
-		if (n <= 1) {
-			return 0;
-		}
-		if (offset <= 0) {
-			return 0;
-		}
-		if (offset >= this.totalHeightPx) {
-			return n - 1;
-		}
-		let low = 0;
-		let high = n - 1;
-		while (low < high) {
-			const mid = Math.floor((low + high) / 2);
-			const nextStart = this.prefixSums[mid + 1] ?? 0;
-			if (nextStart <= offset) {
-				low = mid + 1;
-			} else {
-				high = mid;
-			}
-		}
-		return low;
+		return estimateVirtualEventHeight(editor.getEventById(eventId), ui);
 	}
 
 	private getListTopOffset(scrollElement: HTMLElement, listElement: HTMLElement, scrollTop: number): number {
@@ -526,13 +508,16 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 		if (!container) {
 			return;
 		}
-		const top = this.prefixSums[rangeStart] ?? 0;
-		const totalItems = this.props.eventIds.length;
-		const baseBottom = Math.max(0, this.totalHeightPx - (this.prefixSums[rangeEnd] ?? 0));
-		const missingGap = rangeEnd > 0 && rangeEnd < totalItems ? this.gapPx : 0;
-		const bottom = baseBottom + missingGap;
-		container.style.setProperty('--cgenh-virtual-top', `${top}px`);
-		container.style.setProperty('--cgenh-virtual-bottom', `${bottom}px`);
+		const padding = computeVirtualListPadding(
+			this.prefixSums,
+			this.totalHeightPx,
+			this.props.eventIds.length,
+			rangeStart,
+			rangeEnd,
+			this.gapPx,
+		);
+		container.style.setProperty('--cgenh-virtual-top', `${padding.top}px`);
+		container.style.setProperty('--cgenh-virtual-bottom', `${padding.bottom}px`);
 	}
 
 	private updateVisibleRange(): void {
@@ -548,18 +533,23 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 		const viewportHeight = this.getViewportHeight(scrollElement);
 		const listTop = this.getListTopOffset(scrollElement, container, scrollTop);
 		const viewTop = Math.max(0, scrollTop - listTop);
-		const viewBottom = viewTop + viewportHeight;
+		const range = computeVirtualListRange(
+			this.prefixSums,
+			this.totalHeightPx,
+			this.props.eventIds.length,
+			viewTop,
+			viewportHeight,
+			OVERSCAN_COUNT,
+		);
 
-		const startIndex = this.findIndexAtOffset(viewTop);
-		const endIndex = this.findIndexAtOffset(viewBottom) + 1;
-		const nextStart = Math.max(0, startIndex - OVERSCAN_COUNT);
-		const nextEnd = Math.min(this.props.eventIds.length, endIndex + OVERSCAN_COUNT);
-
-		if (nextStart !== this.state.rangeStart || nextEnd !== this.state.rangeEnd) {
-			this.setState({ rangeStart: nextStart, rangeEnd: nextEnd }, () => this.applyPadding(nextStart, nextEnd));
+		if (range.start !== this.state.rangeStart || range.end !== this.state.rangeEnd) {
+			this.setState(
+				{ rangeStart: range.start, rangeEnd: range.end },
+				() => this.applyPadding(range.start, range.end),
+			);
 			return;
 		}
-		this.applyPadding(nextStart, nextEnd);
+		this.applyPadding(range.start, range.end);
 	}
 
 	private setItemElement = (eventId: string, element: HTMLElement | null) => {
@@ -598,10 +588,13 @@ export class VirtualizedEventsList extends React.Component<VirtualizedEventsList
 			}
 			const ui = eventCardUiStateStore.get(eventId);
 			const collapsed = ui ? ui.collapsed : false;
-			const usedHeight = this.getEstimatedOrMeasuredHeightPx(eventId);
+			const previous = this.measuredById.get(eventId);
+			const usedHeight = resolveVirtualResizeBaselineHeight(
+				previous?.height,
+				this.getEstimatedOrMeasuredHeightPx(eventId),
+			);
 			const rect = target.getBoundingClientRect();
 			const height = Math.max(0, entry.contentRect.height);
-			const previous = this.measuredById.get(eventId);
 			if (previous && previous.collapsed === collapsed && Math.abs(previous.height - height) < 0.5) {
 				continue;
 			}

@@ -1,13 +1,18 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { winEE } from '../../../msg/WindowEventEmitter';
+import { CAPTURED_SCROLL_EVENT, winEE } from '../../../msg/WindowEventEmitter';
 import { translation } from '../../../trans/Trans';
 import { DynamicStyle } from '../../utils/dynamicStyles';
-
-interface Suggestion {
-	value: string;
-	label?: string;
-}
+import { AnimationFrameTask } from '../../utils/AnimationFrameTask';
+import { resolveSuggestionDropdownLayout } from './SuggestionDropdownLayout';
+import {
+	canShowTextSuggestions,
+	filterTextSuggestions,
+	getTextHighlightSegments,
+	sortTextSuggestions,
+	textSuggestionsEqual,
+	type TextSuggestion,
+} from './TextInputSuggestions';
 
 interface OnChangeTextInputProps {
 	id?: string;
@@ -18,7 +23,7 @@ interface OnChangeTextInputProps {
 	placeholder?: string;
 	required?: boolean;
 	onChange(value: string): void;
-	suggestions?: Suggestion[];
+	suggestions?: TextSuggestion[];
 	suggestFilter?: 'none';
 	onDraftChange?(value: string): void;
 }
@@ -26,155 +31,125 @@ interface OnChangeTextInputProps {
 interface OnChangeTextInputState {
 	value: string;
 	showSuggestions: boolean;
-	filteredSuggestions: Suggestion[];
+	filteredSuggestions: TextSuggestion[];
 }
 
-/**
- * Mimics native onChange behavior (fires on commit) while keeping suggestions.
- * Internal state tracks typing; external value updates resync when changed.
- */
 export class OnChangeTextInput extends React.Component<OnChangeTextInputProps, OnChangeTextInputState> {
-	private containerRef = React.createRef<HTMLDivElement>();
-	private dropdownRef = React.createRef<HTMLUListElement>();
 	private inputRef = React.createRef<HTMLInputElement>();
-	private rafId: number | null = null;
+	private readonly positionFrame = new AnimationFrameTask();
+	private viewportListenersAttached = false;
 	private dropdownStyle = new DynamicStyle('cgenh-suggestion-dropdown');
 	private dropdownCss = '';
+	private sortedSuggestionsSource?: TextSuggestion[];
+	private sortedSuggestions: TextSuggestion[] = [];
 
 	constructor(props: OnChangeTextInputProps) {
 		super(props);
+		const value = String(props.value ?? '');
 		this.state = {
-			value: String(props.value ?? ''),
+			value,
 			showSuggestions: false,
-			filteredSuggestions: props.suggestions || [],
+			filteredSuggestions: this.getFilteredSuggestions(value, props),
 		};
 	}
 
-	componentDidMount() {
-		document.addEventListener('mousedown', this.handleClickOutside);
-		winEE.on('resize', this.handleWindowResize, this);
-		winEE.on('scroll', this.handleWindowScroll, this);
-	}
-
 	componentDidUpdate(prevProps: OnChangeTextInputProps) {
+		const suggestionsUnavailable = !canShowTextSuggestions(this.props);
+		if (suggestionsUnavailable && (this.state.showSuggestions || this.viewportListenersAttached)) {
+			this.detachViewportListeners();
+			if (this.state.showSuggestions) this.setState({ showSuggestions: false });
+		}
+
 		if (prevProps.value !== this.props.value) {
-			const nextVal = String(this.props.value ?? '');
-			if (nextVal !== this.state.value) {
-				this.setState({ value: nextVal }, () => this.filterSuggestions(nextVal));
+			const value = String(this.props.value ?? '');
+			if (value !== this.state.value) {
+				this.setState({ value, filteredSuggestions: this.getFilteredSuggestions(value) });
+				return;
 			}
 		}
-		if (prevProps.suggestions !== this.props.suggestions) {
-			this.filterSuggestions(this.state.value);
+
+		if (prevProps.suggestions !== this.props.suggestions || prevProps.suggestFilter !== this.props.suggestFilter) {
+			if (!this.props.suggestions?.length) {
+				this.detachViewportListeners();
+				if (this.state.showSuggestions || this.state.filteredSuggestions.length) {
+					this.setState({ showSuggestions: false, filteredSuggestions: [] });
+				}
+				return;
+			}
+			const filteredSuggestions = this.getFilteredSuggestions(this.state.value);
+			if (!textSuggestionsEqual(this.state.filteredSuggestions, filteredSuggestions)) {
+				this.setState({ filteredSuggestions });
+			}
 		}
 	}
 
 	componentWillUnmount() {
-		document.removeEventListener('mousedown', this.handleClickOutside);
-		winEE.off('resize', this.handleWindowResize, this);
-		winEE.off('scroll', this.handleWindowScroll, this);
-		if (this.rafId !== null) {
-			window.cancelAnimationFrame(this.rafId);
-			this.rafId = null;
-		}
+		this.detachViewportListeners();
+		this.positionFrame.cancel();
 		this.dropdownStyle.dispose();
 	}
 
-	private hideSuggestions = () => {
-		if (this.state.showSuggestions) {
-			this.setState({ showSuggestions: false });
+	private getSortedSuggestions(suggestions: TextSuggestion[]): TextSuggestion[] {
+		if (this.sortedSuggestionsSource !== suggestions) {
+			this.sortedSuggestionsSource = suggestions;
+			this.sortedSuggestions = sortTextSuggestions(suggestions);
 		}
-	};
+		return this.sortedSuggestions;
+	}
 
-	private handleClickOutside = (event: MouseEvent) => {
-		if (!event.target || !(event.target instanceof Node)) {
-			return;
-		}
-		const target = event.target;
-		const container = this.containerRef.current;
-		const dropdown = this.dropdownRef.current;
-		const clickedInsideContainer = container ? container.contains(target) : false;
-		const clickedInsideDropdown = dropdown ? dropdown.contains(target) : false;
-		if (!clickedInsideContainer && !clickedInsideDropdown) {
-			this.commitValue();
-			this.hideSuggestions();
-		}
-	};
+	private getFilteredSuggestions(input: string, props = this.props): TextSuggestion[] {
+		const suggestions = props.suggestions;
+		if (!suggestions?.length) return [];
+		if (props.suggestFilter === 'none') return this.getSortedSuggestions(suggestions);
+		return filterTextSuggestions(input, suggestions);
+	}
 
-	private handleViewportChange = () => {
-		if (!this.state.showSuggestions) {
-			return;
-		}
+	private attachViewportListeners(): void {
+		if (this.viewportListenersAttached) return;
+		this.viewportListenersAttached = true;
+		winEE.on('resize', this.handleViewportChange);
+		winEE.on(CAPTURED_SCROLL_EVENT, this.handleViewportChange);
+	}
+
+	private detachViewportListeners(): void {
+		if (!this.viewportListenersAttached) return;
+		this.viewportListenersAttached = false;
+		winEE.off('resize', this.handleViewportChange);
+		winEE.off(CAPTURED_SCROLL_EVENT, this.handleViewportChange);
+	}
+
+	private showSuggestions = (): void => {
+		if (!canShowTextSuggestions(this.props)) return;
+		this.attachViewportListeners();
+		if (!this.state.showSuggestions) this.setState({ showSuggestions: true });
 		this.scheduleDropdownPositionUpdate();
 	};
 
-	private handleWindowResize(this: OnChangeTextInput) {
-		this.handleViewportChange();
-	}
+	private hideSuggestions = () => {
+		this.detachViewportListeners();
+		if (this.state.showSuggestions) this.setState({ showSuggestions: false });
+	};
 
-	private handleWindowScroll(this: OnChangeTextInput) {
-		this.handleViewportChange();
-	}
+	private handleViewportChange = () => {
+		this.scheduleDropdownPositionUpdate();
+	};
 
 	private scheduleDropdownPositionUpdate = () => {
-		if (this.rafId !== null) {
-			return;
-		}
-		this.rafId = window.requestAnimationFrame(() => {
-			this.rafId = null;
-			this.calculateDropdownPosition();
-		});
+		this.positionFrame.schedule(() => this.calculateDropdownPosition());
 	};
 
 	private calculateDropdownPosition = () => {
 		const input = this.inputRef.current;
-		if (!input) return;
+		if (!input || !this.state.showSuggestions) return;
 
 		const rect = input.getBoundingClientRect();
-		const viewportPadding = 8;
-		const dropdownMaxHeight = 200;
-
-		let left = rect.left;
-		let width = rect.width;
-
-		if (left + width > window.innerWidth - viewportPadding) {
-			left = Math.max(viewportPadding, window.innerWidth - width - viewportPadding);
-		}
-		if (left < viewportPadding) {
-			left = viewportPadding;
-		}
-		width = Math.min(width, window.innerWidth - left - viewportPadding);
-
-		const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
-		const spaceAbove = rect.top - viewportPadding;
-		const placeBelow = spaceBelow >= dropdownMaxHeight || spaceBelow >= spaceAbove;
-		const maxHeight = Math.max(
-			Math.min(dropdownMaxHeight, placeBelow ? spaceBelow : spaceAbove),
-			80
+		const layout = resolveSuggestionDropdownLayout(
+			{ left: rect.left, top: rect.top, bottom: rect.bottom, width: rect.width },
+			{ width: window.innerWidth, height: window.innerHeight },
 		);
-
-		const cssText = placeBelow
-			? [
-					'position: fixed;',
-					`left: ${left}px;`,
-					`top: ${rect.bottom}px;`,
-					'bottom: auto;',
-					`width: ${width}px;`,
-					'right: auto;',
-					`max-height: ${maxHeight}px;`,
-					'overflow-y: auto;',
-					'z-index: 2000;',
-				].join(' ')
-			: [
-					'position: fixed;',
-					`left: ${left}px;`,
-					'top: auto;',
-					`bottom: ${window.innerHeight - rect.top}px;`,
-					`width: ${width}px;`,
-					'right: auto;',
-					`max-height: ${maxHeight}px;`,
-					'overflow-y: auto;',
-					'z-index: 2000;',
-				].join(' ');
+		const cssText = layout.placeBelow
+			? `position: fixed; left: ${layout.left}px; top: ${rect.bottom}px; bottom: auto; width: ${layout.width}px; right: auto; max-height: ${layout.maxHeight}px; overflow-y: auto; z-index: 2000;`
+			: `position: fixed; left: ${layout.left}px; top: auto; bottom: ${window.innerHeight - rect.top}px; width: ${layout.width}px; right: auto; max-height: ${layout.maxHeight}px; overflow-y: auto; z-index: 2000;`;
 
 		if (this.dropdownCss !== cssText) {
 			this.dropdownCss = cssText;
@@ -183,28 +158,29 @@ export class OnChangeTextInput extends React.Component<OnChangeTextInputProps, O
 	};
 
 	private handleFocus = () => {
-		this.calculateDropdownPosition();
-		this.filterSuggestions(this.state.value);
-		if (this.props.suggestions?.length) {
-			this.setState({ showSuggestions: true });
-		}
+		this.setState({ filteredSuggestions: this.getFilteredSuggestions(this.state.value) }, this.showSuggestions);
 	};
 
 	private handleInputChange = (value: string) => {
-		this.calculateDropdownPosition();
-		this.setState({ value }, () => this.filterSuggestions(value));
 		this.props.onDraftChange?.(value);
-		if (this.props.suggestions?.length) {
-			this.setState({ showSuggestions: true });
+		const hasSuggestions = canShowTextSuggestions(this.props);
+		this.setState({
+			value,
+			filteredSuggestions: this.getFilteredSuggestions(value),
+			showSuggestions: hasSuggestions,
+		});
+		if (hasSuggestions) {
+			this.attachViewportListeners();
+			this.scheduleDropdownPositionUpdate();
+		} else {
+			this.detachViewportListeners();
 		}
 	};
 
 	private commitValue = () => {
+		if (this.props.disabled || this.props.readOnly) return;
 		const next = this.state.value;
-		const current = String(this.props.value ?? '');
-		if (next !== current) {
-			this.props.onChange(next);
-		}
+		if (next !== String(this.props.value ?? '')) this.props.onChange(next);
 	};
 
 	private handleBlur = () => {
@@ -213,82 +189,28 @@ export class OnChangeTextInput extends React.Component<OnChangeTextInputProps, O
 	};
 
 	private handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-		if (event.key === 'Enter' && !this.props.textarea) {
-			this.commitValue();
-			this.scheduleDropdownPositionUpdate();
-		}
-		if (event.key === 'Escape') {
-			this.scheduleDropdownPositionUpdate();
-		}
+		if (event.nativeEvent.isComposing) return;
+		if (event.key === 'Enter' && !this.props.textarea) this.commitValue();
+		if (event.key === 'Escape') this.hideSuggestions();
 	};
 
-	private filterSuggestions = (input: string) => {
-		const { suggestions, suggestFilter } = this.props;
-		if (!suggestions) {
-			this.setState({ filteredSuggestions: [] });
-			return;
-		}
-
-		// When suggestFilter is 'none', don't filter and just sort
-		if (suggestFilter === 'none') {
-			const sorted = [...suggestions].sort((a, b) => a.value.localeCompare(b.value));
-			this.setState({ filteredSuggestions: sorted });
-			return;
-		}
-
-		const lowercasedInput = String(input ?? '').toLowerCase();
-		const filtered = suggestions.filter(
-			(suggestion) =>
-				suggestion.value.toLowerCase().includes(lowercasedInput) ||
-				(suggestion.label && suggestion.label.toLowerCase().includes(lowercasedInput))
-		);
-		this.setState({ filteredSuggestions: filtered });
-	};
-
-	private handleSuggestionMouseDown = (event: React.MouseEvent, suggestion: Suggestion) => {
+	private handleSuggestionMouseDown = (event: React.MouseEvent, suggestion: TextSuggestion) => {
 		event.preventDefault();
-
-		const next = suggestion.value;
-		this.setState({ value: next, showSuggestions: false }, () => {
-			this.props.onChange(next);
-			this.filterSuggestions(next);
+		if (this.props.disabled || this.props.readOnly) {
+			this.hideSuggestions();
+			return;
+		}
+		const value = suggestion.value;
+		this.detachViewportListeners();
+		this.setState({
+			value,
+			showSuggestions: false,
+			filteredSuggestions: this.getFilteredSuggestions(value),
+		}, () => {
+			this.props.onChange(value);
 			this.inputRef.current?.focus();
 		});
 	};
-
-	private renderHighlightedText(text: string, query: string): React.ReactNode {
-		const raw = String(text ?? '');
-		const needle = String(query ?? '').trim();
-		if (!needle) {
-			return raw;
-		}
-
-		const lower = raw.toLowerCase();
-		const lowerNeedle = needle.toLowerCase();
-		const nodes: React.ReactNode[] = [];
-		let cursor = 0;
-		let matchIndex = lower.indexOf(lowerNeedle, cursor);
-		let key = 0;
-
-		while (matchIndex !== -1) {
-			if (matchIndex > cursor) {
-				nodes.push(raw.slice(cursor, matchIndex));
-			}
-			nodes.push(
-				<mark key={`m-${key++}`} className="bg-warning-subtle px-0">
-					{raw.slice(matchIndex, matchIndex + needle.length)}
-				</mark>
-			);
-			cursor = matchIndex + needle.length;
-			matchIndex = lower.indexOf(lowerNeedle, cursor);
-		}
-
-		if (cursor < raw.length) {
-			nodes.push(raw.slice(cursor));
-		}
-
-		return nodes;
-	}
 
 	render() {
 		const { id, textarea, suggestions, disabled, readOnly, placeholder, required } = this.props;
@@ -312,10 +234,15 @@ export class OnChangeTextInput extends React.Component<OnChangeTextInputProps, O
 			);
 		}
 
-		const hasSuggestions = suggestions && suggestions.length > 0;
-
+		const hasSuggestions = canShowTextSuggestions({ suggestions, disabled, readOnly, textarea });
+		const renderHighlightedText = (text: string) =>
+			getTextHighlightSegments(text, value).map((segment, index) =>
+				segment.match ? (
+					<mark key={index} className="bg-warning-subtle px-0">{segment.text}</mark>
+				) : segment.text
+			);
 		return (
-			<div className="position-relative" ref={this.containerRef}>
+			<div className="position-relative">
 				<input
 					className="form-control form-control-sm"
 					type="text"
@@ -332,50 +259,37 @@ export class OnChangeTextInput extends React.Component<OnChangeTextInputProps, O
 					required={required}
 					ref={this.inputRef}
 				/>
-				{hasSuggestions &&
-					showSuggestions &&
-					createPortal(
-						<ul className={`dropdown-menu show shadow ${this.dropdownStyle.className}`} ref={this.dropdownRef}>
-							{filteredSuggestions.length > 0 ? (
-								filteredSuggestions.map((suggestion) => {
-									const hasLabel = suggestion.label !== undefined && suggestion.label !== null;
-									const labelText = hasLabel ? String(suggestion.label) : suggestion.value;
-									const showRawValue = hasLabel && labelText !== suggestion.value;
-									const wrapRawValueInParens = showRawValue && labelText.trim() !== '';
-									return (
-										<li
-											key={suggestion.value}
-											onMouseDown={(e) => this.handleSuggestionMouseDown(e, suggestion)}
-										>
-											<button type="button" className="dropdown-item d-flex align-items-start justify-content-between gap-2">
-												<span className="text-truncate">
-													{this.renderHighlightedText(labelText, value)}
-												</span>
-												{showRawValue ? (
-													<small className="text-body-secondary text-truncate">
-														{wrapRawValueInParens ? (
-															<>
-																(
-																{this.renderHighlightedText(suggestion.value, value)}
-																)
-															</>
-														) : (
-															this.renderHighlightedText(suggestion.value, value)
-														)}
-													</small>
-												) : null}
-											</button>
-										</li>
-									);
-								})
-							) : (
-								<li className="dropdown-item-text text-body-secondary fst-italic">
-									{translation.validation.noMatches.getTrans()}
-								</li>
-							)}
-						</ul>,
-						document.body
-					)}
+				{hasSuggestions && showSuggestions && createPortal(
+					<ul className={`dropdown-menu show shadow ${this.dropdownStyle.className}`}>
+						{filteredSuggestions.length > 0 ? (
+							filteredSuggestions.map((suggestion) => {
+								const hasLabel = suggestion.label !== undefined && suggestion.label !== null;
+								const labelText = hasLabel ? String(suggestion.label) : suggestion.value;
+								const showRawValue = hasLabel && labelText !== suggestion.value;
+								const wrapRawValueInParens = showRawValue && labelText.trim() !== '';
+								return (
+									<li key={suggestion.value} onMouseDown={(e) => this.handleSuggestionMouseDown(e, suggestion)}>
+										<button type="button" className="dropdown-item d-flex align-items-start justify-content-between gap-2">
+											<span className="text-truncate">{renderHighlightedText(labelText)}</span>
+											{showRawValue ? (
+												<small className="text-body-secondary text-truncate">
+													{wrapRawValueInParens ? (
+														<>({renderHighlightedText(suggestion.value)})</>
+													) : renderHighlightedText(suggestion.value)}
+												</small>
+											) : null}
+										</button>
+									</li>
+								);
+							})
+						) : (
+							<li className="dropdown-item-text text-body-secondary fst-italic">
+								{translation.validation.noMatches.getTrans()}
+							</li>
+						)}
+					</ul>,
+					document.body
+				)}
 			</div>
 		);
 	}

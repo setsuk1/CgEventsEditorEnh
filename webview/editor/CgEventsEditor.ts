@@ -3,16 +3,39 @@ import {
 	ICgEvent,
 	ICgEventLogicBlock,
 	ICgEventsDocument,
+	ICgEventsDocumentConfig,
 	ICgEventsFormat,
 	ICgEventsParseResult,
 	ICgEventsParseSuccess,
 	ICgEventsSchema,
 	ICgItemInfoList,
-	ISortingPreset
+	ISortingPreset,
+	ObjectUtil,
+	isCgEventsDocument
 } from '@shared';
 import { EventEmitter } from '../utils/EventEmitter';
+import { setOwnValueAtPath } from '../utils/ownPath';
 import { EditorHistory, EditorHistoryEntry } from './EditorHistory';
-import { ebtConv, EventBlockType } from './eventBlockTypes';
+import { cloneEditorEntry, cloneEditorValue } from './EditorSnapshots';
+import { createDefaultEvent } from './EventDefaults';
+import { generateDuplicateEventId, generateEventId } from './EventIdGeneration';
+import { ebtConv, EventBlockType, type LogicBlockKey } from './eventBlockTypes';
+import {
+	type LogicBlockMoveResult,
+	moveLogicBlockByDelta,
+	moveLogicBlockToEvent,
+	moveLogicBlockToIndex,
+} from './LogicBlockMoveMutations';
+import { LogicBlockUiIdentityRegistry } from './LogicBlockUiIdentityRegistry';
+import { normalizeClampedIndex, resolveRelativeIndex } from './editorIndex';
+import {
+	type LogicSelectionMutationResult,
+	insertLogicBlocks,
+	moveLogicSelectionToBoundary,
+	moveLogicSelectionToEvent,
+	removeLogicSelection,
+	toggleLogicSelectionDisabled,
+} from './LogicSelectionMutations';
 
 export interface EditorViewState {
 	document?: ICgEventsDocument;
@@ -76,17 +99,20 @@ export type EditorChangeEventType = typeof EditorChangeEvents[keyof typeof Edito
 
 export interface EditorChangeEventPayload {
 	eventId?: string;
+	previousEventId?: string;
 	blockType?: EventBlockType;
 	index?: number;
 	event?: ICgEvent;
+	previousEvent?: ICgEvent;
 	events?: ICgEvent[];
 	config?: Record<string, any>;
 	data?: any;
 }
 
 export class CgEventsEditor extends EventEmitter {
-	private _parseResult: ICgEventsParseResult;
+	private _format?: ICgEventsFormat;
 	private _entry?: ICgEventsParseSuccess;
+	private _documentVersion?: number;
 	private _parseError?: any;
 	private _schema?: ICgEventsSchema;
 	private _sources?: string[];
@@ -102,8 +128,7 @@ export class CgEventsEditor extends EventEmitter {
 	private cachedEventById = new Map<string, ICgEvent>();
 	private cachedEventIndexById = new Map<string, number>();
 
-	private logicBlockUiKeyByBlock = new WeakMap<ICgEventLogicBlock, string>();
-	private nextLogicBlockUiKey = 1;
+	private readonly logicBlockUiIdentity = new LogicBlockUiIdentityRegistry();
 
 	constructor() {
 		super();
@@ -206,13 +231,13 @@ export class CgEventsEditor extends EventEmitter {
 		});
 	}
 
-	updateConfig(configPatch: Record<string, any>) {
+	updateConfig(configPatch: Partial<ICgEventsDocumentConfig>) {
 		const result = this._updateConfig(configPatch);
 		if (!result) {
 			return;
 		}
-		const previous = this._deepClone(result.previous) ?? result.previous;
-		const next = this._deepClone(result.next) ?? result.next;
+		const previous = cloneEditorValue(result.previous) ?? result.previous;
+		const next = cloneEditorValue(result.next) ?? result.next;
 		this.recordHistory({
 			undo: () => this.replaceConfig(previous),
 			redo: () => this.replaceConfig(next),
@@ -224,11 +249,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const storedBlock = this._deepClone(result.block) ?? result.block;
-		this.recordHistory({
-			undo: () => this.removeLogicAtIndex(eventId, blockType, result.index),
-			redo: () => this.insertLogicAtIndex(eventId, blockType, storedBlock, result.index),
-		});
+		this.recordLogicInsertionHistory(eventId, blockType, result.index, result.block);
 	}
 
 	insertLogic(eventId: string, blockType: EventBlockType, block: ICgEventLogicBlock, targetIndex?: number) {
@@ -236,11 +257,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const storedBlock = this._deepClone(result.block) ?? result.block;
-		this.recordHistory({
-			undo: () => this.removeLogicAtIndex(eventId, blockType, result.index),
-			redo: () => this.insertLogicAtIndex(eventId, blockType, storedBlock, result.index),
-		});
+		this.recordLogicInsertionHistory(eventId, blockType, result.index, result.block);
 	}
 
 	updateLogicData(eventId: string, blockType: EventBlockType, index: number, data: any) {
@@ -248,12 +265,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const previous = this._deepClone(result.previous) ?? result.previous;
-		const next = this._deepClone(result.next) ?? result.next;
-		this.recordHistory({
-			undo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, previous),
-			redo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, next),
-		});
+		this.recordLogicDataHistory(eventId, blockType, index, result);
 	}
 
 	updateLogicField(eventId: string, blockType: EventBlockType, index: number, path: string[], value: any) {
@@ -261,12 +273,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const previous = this._deepClone(result.previous) ?? result.previous;
-		const next = this._deepClone(result.next) ?? result.next;
-		this.recordHistory({
-			undo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, previous),
-			redo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, next),
-		});
+		this.recordLogicDataHistory(eventId, blockType, index, result);
 	}
 
 	removeLogic(eventId: string, blockType: EventBlockType, index: number) {
@@ -274,7 +281,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const storedBlock = this._deepClone(result.block) ?? result.block;
+		const storedBlock = this.cloneLogicBlockWithUiIdentity(result.block);
 		this.recordHistory({
 			undo: () => this.insertLogicAtIndex(eventId, blockType, storedBlock, result.index),
 			redo: () => this.removeLogicAtIndex(eventId, blockType, result.index),
@@ -286,10 +293,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.moveLogicWithinEvent(eventId, blockType, result.toIndex, result.fromIndex),
-			redo: () => this.moveLogicWithinEvent(eventId, blockType, result.fromIndex, result.toIndex),
-		});
+		this.recordLogicMoveHistory(eventId, blockType, result);
 	}
 
 	moveLogicToIndex(eventId: string, blockType: EventBlockType, index: number, targetIndex: number) {
@@ -297,10 +301,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.moveLogicWithinEvent(eventId, blockType, result.toIndex, result.fromIndex),
-			redo: () => this.moveLogicWithinEvent(eventId, blockType, result.fromIndex, result.toIndex),
-		});
+		this.recordLogicMoveHistory(eventId, blockType, result);
 	}
 
 	moveLogicToEvent(eventId: string, blockType: EventBlockType, index: number, targetEventId: string, targetIndex?: number) {
@@ -308,8 +309,8 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const storedBlock = this._deepClone(result.block) ?? result.block;
-		const cloneForInsert = () => this._deepClone(storedBlock) ?? storedBlock;
+		const storedBlock = this.cloneLogicBlockWithUiIdentity(result.block);
+		const cloneForInsert = () => this.cloneLogicBlockWithUiIdentity(storedBlock);
 		this.recordHistory({
 			undo: () => {
 				if (result.sourceEventId === result.targetEventId) {
@@ -340,10 +341,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	removeLogicSelection(
@@ -354,10 +352,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	toggleLogicDisabledSelection(
@@ -368,10 +363,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	insertLogicBlocks(
@@ -384,10 +376,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	moveLogicSelectionToTop(
@@ -398,10 +387,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	moveLogicSelectionToBottom(
@@ -412,10 +398,7 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		this.recordHistory({
-			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
-			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
-		});
+		this.recordLogicSelectionHistory(blockType, result);
 	}
 
 	toggleLogicDisabled(eventId: string, blockType: EventBlockType, index: number) {
@@ -423,196 +406,112 @@ export class CgEventsEditor extends EventEmitter {
 		if (!result) {
 			return;
 		}
-		const previous = this._deepClone(result.previous) ?? result.previous;
-		const next = this._deepClone(result.next) ?? result.next;
+		this.recordLogicDataHistory(eventId, blockType, index, result);
+	}
+
+	private recordLogicMoveHistory(
+		eventId: string,
+		blockType: EventBlockType,
+		result: { fromIndex: number; toIndex: number },
+	): void {
+		this.recordHistory({
+			undo: () => this.moveLogicWithinEvent(eventId, blockType, result.toIndex, result.fromIndex),
+			redo: () => this.moveLogicWithinEvent(eventId, blockType, result.fromIndex, result.toIndex),
+		});
+	}
+
+	private recordLogicInsertionHistory(
+		eventId: string,
+		blockType: EventBlockType,
+		index: number,
+		block: ICgEventLogicBlock,
+	): void {
+		const storedBlock = this.cloneLogicBlockWithUiIdentity(block);
+		this.recordHistory({
+			undo: () => this.removeLogicAtIndex(eventId, blockType, index),
+			redo: () => this.insertLogicAtIndex(eventId, blockType, storedBlock, index),
+		});
+	}
+
+	private recordLogicDataHistory(
+		eventId: string,
+		blockType: EventBlockType,
+		index: number,
+		result: { previous: any; next: any },
+	): void {
+		const previous = cloneEditorValue(result.previous) ?? result.previous;
+		const next = cloneEditorValue(result.next) ?? result.next;
 		this.recordHistory({
 			undo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, previous),
 			redo: () => this.replaceLogicDataAtIndex(eventId, blockType, index, next),
 		});
 	}
 
-	private restoreEventsForLogicSelection(events: ICgEvent[], blockType: EventBlockType, affectedEventIds: string[]) {
-		this.setEvents(events);
-		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
-		for (let i = 0; i < affectedEventIds.length; i++) {
-			this._emitChange(updateType, { eventId: affectedEventIds[i], blockType });
-		}
+	private recordLogicSelectionHistory(
+		blockType: EventBlockType,
+		result: LogicSelectionMutationResult,
+	): void {
+		this.recordHistory({
+			undo: () => this.restoreEventsForLogicSelection(result.previousEvents, blockType, result.affectedEventIds),
+			redo: () => this.restoreEventsForLogicSelection(result.nextEvents, blockType, result.affectedEventIds),
+		});
 	}
 
-	private collectLogicSelectionIndicesByEventId(
-		selection: Array<{ eventId: string; index: number }>
-	): Map<string, number[]> {
-		const grouped = new Map<string, number[]>();
-		for (let i = 0; i < selection.length; i++) {
-			const entry = selection[i];
-			if (!entry) {
-				continue;
-			}
-			const eventId = entry.eventId;
-			const index = entry.index;
-			if (!eventId) {
-				continue;
-			}
-			if (!Number.isFinite(index)) {
-				continue;
-			}
-			const existing = grouped.get(eventId);
-			if (existing) {
-				existing.push(index);
-				continue;
-			}
-			grouped.set(eventId, [index]);
+	private emitLogicSelectionUpdates(blockType: EventBlockType, affectedEventIds: string[]): void {
+		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
+		for (let i = 0; i < affectedEventIds.length; i++) {
+			this.emit(updateType, { eventId: affectedEventIds[i], blockType });
 		}
-		return grouped;
+		this.emit(EditorChangeEvents.CHANGE, { blockType });
 	}
+
+	private restoreEventsForLogicSelection(events: ICgEvent[], blockType: EventBlockType, affectedEventIds: string[]) {
+		this.setEvents(events);
+		this.emitLogicSelectionUpdates(blockType, affectedEventIds);
+	}
+
+	private applyLogicSelectionMutationResult(
+		blockType: EventBlockType,
+		result: LogicSelectionMutationResult | undefined,
+	): LogicSelectionMutationResult | undefined {
+		if (!result) {
+			return undefined;
+		}
+		for (const replacement of result.blockReplacements) {
+			this.transferLogicBlockUiKey(replacement.previous, replacement.next);
+		}
+		this.setEvents(result.nextEvents);
+		this.emitLogicSelectionUpdates(blockType, result.affectedEventIds);
+		return result;
+	}
+
 
 	private _removeLogicSelection(
 		blockType: EventBlockType,
 		selection: Array<{ eventId: string; index: number }>
-	): { previousEvents: ICgEvent[]; nextEvents: ICgEvent[]; affectedEventIds: string[] } | undefined {
+	): LogicSelectionMutationResult | undefined {
 		const events = this._getEvents();
-		if (!events || selection.length === 0) {
+		if (!events) {
 			return;
 		}
-
-		const blockKey = this.getBlockKey(blockType);
-		const removalsByEvent = this.collectLogicSelectionIndicesByEventId(selection);
-		if (removalsByEvent.size === 0) {
-			return;
-		}
-
-		for (const indices of removalsByEvent.values()) {
-			indices.sort((a, b) => b - a);
-		}
-
-		let changed = false;
-		const affectedEventIds: string[] = [];
-
-		const nextEvents = events.map((event) => {
-			const removalIndices = removalsByEvent.get(event.id);
-			if (!removalIndices || removalIndices.length === 0) {
-				return event;
-			}
-
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr)) {
-				return event;
-			}
-
-			const newSectionArr = [...sectionArr];
-			let removedAny = false;
-			let lastIndex: number | null = null;
-			for (let i = 0; i < removalIndices.length; i++) {
-				const index = Math.floor(removalIndices[i]);
-				if (lastIndex !== null && index === lastIndex) {
-					continue;
-				}
-				lastIndex = index;
-				if (index < 0 || index >= newSectionArr.length) {
-					continue;
-				}
-				newSectionArr.splice(index, 1);
-				removedAny = true;
-			}
-			if (!removedAny) {
-				return event;
-			}
-
-			changed = true;
-			affectedEventIds.push(event.id);
-			return { ...event, [blockKey]: newSectionArr };
-		});
-
-		if (!changed) {
-			return;
-		}
-
-		this.setEvents(nextEvents);
-		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
-		for (let i = 0; i < affectedEventIds.length; i++) {
-			this._emitChange(updateType, { eventId: affectedEventIds[i], blockType });
-		}
-		return { previousEvents: events, nextEvents, affectedEventIds };
+		return this.applyLogicSelectionMutationResult(
+			blockType,
+			removeLogicSelection(events, this.getBlockKey(blockType), selection),
+		);
 	}
 
 	private _toggleLogicDisabledSelection(
 		blockType: EventBlockType,
 		selection: Array<{ eventId: string; index: number }>
-	): { previousEvents: ICgEvent[]; nextEvents: ICgEvent[]; affectedEventIds: string[] } | undefined {
+	): LogicSelectionMutationResult | undefined {
 		const events = this._getEvents();
-		if (!events || selection.length === 0) {
+		if (!events) {
 			return;
 		}
-
-		const blockKey = this.getBlockKey(blockType);
-		const indicesByEvent = this.collectLogicSelectionIndicesByEventId(selection);
-		if (indicesByEvent.size === 0) {
-			return;
-		}
-
-		for (const indices of indicesByEvent.values()) {
-			indices.sort((a, b) => a - b);
-		}
-
-		let changed = false;
-		const affectedEventIds: string[] = [];
-
-		const nextEvents = events.map((event) => {
-			const indices = indicesByEvent.get(event.id);
-			if (!indices || indices.length === 0) {
-				return event;
-			}
-
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr)) {
-				return event;
-			}
-
-			const newSectionArr = [...sectionArr];
-			let updatedAny = false;
-			let lastIndex: number | null = null;
-			for (let i = 0; i < indices.length; i++) {
-				const index = Math.floor(indices[i]);
-				if (lastIndex !== null && index === lastIndex) {
-					continue;
-				}
-				lastIndex = index;
-				if (index < 0 || index >= newSectionArr.length) {
-					continue;
-				}
-
-				const current = newSectionArr[index];
-				if (!current) {
-					continue;
-				}
-				const data = current.data || {};
-				const nextDisable = !data.disabled;
-				const nextData = { ...data, disabled: nextDisable };
-				const nextBlock = { ...current, data: nextData };
-				this.transferLogicBlockUiKey(current, nextBlock);
-				newSectionArr[index] = nextBlock;
-				updatedAny = true;
-			}
-
-			if (!updatedAny) {
-				return event;
-			}
-
-			changed = true;
-			affectedEventIds.push(event.id);
-			return { ...event, [blockKey]: newSectionArr };
-		});
-
-		if (!changed) {
-			return;
-		}
-
-		this.setEvents(nextEvents);
-		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
-		for (let i = 0; i < affectedEventIds.length; i++) {
-			this._emitChange(updateType, { eventId: affectedEventIds[i], blockType });
-		}
-		return { previousEvents: events, nextEvents, affectedEventIds };
+		return this.applyLogicSelectionMutationResult(
+			blockType,
+			toggleLogicSelectionDisabled(events, this.getBlockKey(blockType), selection),
+		);
 	}
 
 	private _insertLogicBlocks(
@@ -620,126 +519,45 @@ export class CgEventsEditor extends EventEmitter {
 		blockType: EventBlockType,
 		blocks: ICgEventLogicBlock[],
 		targetIndex: number
-	): { previousEvents: ICgEvent[]; nextEvents: ICgEvent[]; affectedEventIds: string[] } | undefined {
+	): LogicSelectionMutationResult | undefined {
 		const events = this._getEvents();
-		if (!events || !eventId || blocks.length === 0) {
+		if (!events) {
 			return;
 		}
-
-		const blockKey = this.getBlockKey(blockType);
-		const targetEvent = events.find((evt) => evt.id === eventId);
-		const targetArr = targetEvent ? targetEvent[blockKey] : undefined;
-		if (!Array.isArray(targetArr)) {
+		const result = insertLogicBlocks(
+			events,
+			this.getBlockKey(blockType),
+			this.getEventIndex(eventId),
+			blocks,
+			targetIndex,
+		);
+		if (!result) {
 			return;
 		}
-
-		const toInsert: ICgEventLogicBlock[] = [];
-		for (let i = 0; i < blocks.length; i++) {
-			const block = blocks[i];
-			if (!block) {
-				continue;
-			}
-			toInsert.push({
-				type: typeof block.type === 'string' ? block.type : '',
-				data: block.data ? { ...block.data } : {},
-			});
-		}
-		if (toInsert.length === 0) {
-			return;
-		}
-
-		const insertAt = Math.max(0, Math.min(Math.floor(targetIndex), targetArr.length));
-		const nextEvents = events.map((event) => {
-			if (event.id !== eventId) {
-				return event;
-			}
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr)) {
-				return event;
-			}
-			const nextSectionArr = [...sectionArr];
-			nextSectionArr.splice(insertAt, 0, ...toInsert);
-			return { ...event, [blockKey]: nextSectionArr };
-		});
-
-		this.setEvents(nextEvents);
-		const affectedEventIds = [eventId];
+		this.setEvents(result.nextEvents);
 		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
 		this._emitChange(updateType, { eventId, blockType });
-		return { previousEvents: events, nextEvents, affectedEventIds };
+		return result;
 	}
 
 	private _moveLogicSelectionToBoundary(
 		blockType: EventBlockType,
 		selection: Array<{ eventId: string; index: number }>,
 		target: 'top' | 'bottom'
-	): { previousEvents: ICgEvent[]; nextEvents: ICgEvent[]; affectedEventIds: string[] } | undefined {
+	): LogicSelectionMutationResult | undefined {
 		const events = this._getEvents();
-		if (!events || selection.length === 0) {
+		if (!events) {
 			return;
 		}
-
-		const blockKey = this.getBlockKey(blockType);
-		const indicesByEvent = this.collectLogicSelectionIndicesByEventId(selection);
-		if (indicesByEvent.size === 0) {
-			return;
-		}
-
-		let changed = false;
-		const affectedEventIds: string[] = [];
-
-		const nextEvents = events.map((event) => {
-			const indices = indicesByEvent.get(event.id);
-			if (!indices || indices.length === 0) {
-				return event;
-			}
-
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr) || sectionArr.length === 0) {
-				return event;
-			}
-
-			const selected = new Set<number>();
-			for (let i = 0; i < indices.length; i++) {
-				const index = Math.floor(indices[i]);
-				if (index < 0 || index >= sectionArr.length) {
-					continue;
-				}
-				selected.add(index);
-			}
-			if (selected.size === 0 || selected.size === sectionArr.length) {
-				return event;
-			}
-
-			const selectedBlocks: ICgEventLogicBlock[] = [];
-			const restBlocks: ICgEventLogicBlock[] = [];
-			for (let i = 0; i < sectionArr.length; i++) {
-				const block = sectionArr[i];
-				if (selected.has(i)) {
-					selectedBlocks.push(block);
-				} else {
-					restBlocks.push(block);
-				}
-			}
-
-			const nextSectionArr = target === 'top'
-				? [...selectedBlocks, ...restBlocks]
-				: [...restBlocks, ...selectedBlocks];
-			changed = true;
-			affectedEventIds.push(event.id);
-			return { ...event, [blockKey]: nextSectionArr };
-		});
-
-		if (!changed) {
-			return;
-		}
-
-		this.setEvents(nextEvents);
-		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
-		for (let i = 0; i < affectedEventIds.length; i++) {
-			this._emitChange(updateType, { eventId: affectedEventIds[i], blockType });
-		}
-		return { previousEvents: events, nextEvents, affectedEventIds };
+		return this.applyLogicSelectionMutationResult(
+			blockType,
+			moveLogicSelectionToBoundary(
+				events,
+				this.getBlockKey(blockType),
+				selection,
+				target,
+			),
+		);
 	}
 
 	/**
@@ -750,16 +568,10 @@ export class CgEventsEditor extends EventEmitter {
 	}
 
 	getEventsJson(): ICgEventsDocument | undefined {
-		if (this._entry) {
-			return this._entry.json;
-		}
-		if (this._parseResult && this._parseResult.format !== 'error') {
-			return this._parseResult.json;
-		}
-		return undefined;
+		return this._entry?.json;
 	}
 	getEventsFormat() {
-		return this._entry?.format ?? this._parseResult?.format;
+		return this._entry?.format ?? this._format;
 	}
 	getParseError() {
 		return this._parseError;
@@ -821,81 +633,91 @@ export class CgEventsEditor extends EventEmitter {
 	}
 
 	getLogicBlockUiKey(block: ICgEventLogicBlock): string {
-		const existing = this.logicBlockUiKeyByBlock.get(block);
-		if (existing) {
-			return existing;
-		}
-		const created = `logic-${this.nextLogicBlockUiKey++}`;
-		this.logicBlockUiKeyByBlock.set(block, created);
-		return created;
+		return this.logicBlockUiIdentity.getKey(block);
 	}
 
 	private transferLogicBlockUiKey(from: ICgEventLogicBlock, to: ICgEventLogicBlock): void {
-		const existing = this.logicBlockUiKeyByBlock.get(from);
-		if (!existing) {
-			return;
+		this.logicBlockUiIdentity.transfer(from, to);
+	}
+
+	private cloneLogicBlockWithUiIdentity(block: ICgEventLogicBlock): ICgEventLogicBlock {
+		this.getLogicBlockUiKey(block);
+		const cloned = cloneEditorValue(block) ?? block;
+		if (cloned !== block) {
+			this.transferLogicBlockUiKey(block, cloned);
 		}
-		this.logicBlockUiKeyByBlock.set(to, existing);
+		return cloned;
 	}
 	getLogicBlock(eventId: string, blockType: EventBlockType, index: number): ICgEventLogicBlock | undefined {
 		const blocks = this.getLogicBlocks(eventId, blockType);
 		return blocks[index];
 	}
 
-	private getBlockKey(blockType: EventBlockType): string {
+	private getBlockKey(blockType: EventBlockType): LogicBlockKey {
 		return ebtConv.COMPLEX[blockType];
 	}
 
+	private getLogicSectionTarget(eventId: string, blockType: EventBlockType) {
+		const events = this._getEvents();
+		if (!events) return undefined;
+		const eventIndex = this.getEventIndex(eventId);
+		if (eventIndex === -1) return undefined;
+		const event = events[eventIndex];
+		if (!event) return undefined;
+		const blockKey = this.getBlockKey(blockType);
+		const section = event[blockKey];
+		if (!Array.isArray(section)) return undefined;
+		return { events, eventIndex, event, blockKey, section };
+	}
+
+	private getLogicMutationTarget(eventId: string, blockType: EventBlockType, index: number) {
+		const target = this.getLogicSectionTarget(eventId, blockType);
+		if (!target || index < 0 || index >= target.section.length) return undefined;
+		const block = target.section[index];
+		if (!block) return undefined;
+		return { ...target, block };
+	}
+
 	private _emitChange(eventType: EditorChangeEventType = EditorChangeEvents.CHANGE, payload?: EditorChangeEventPayload) {
-		// Emit specific event type
 		if (eventType !== EditorChangeEvents.CHANGE) {
 			this.emit(eventType, payload);
 		}
-		// Always emit generic change event for backward compatibility
 		this.emit(EditorChangeEvents.CHANGE, payload);
 	}
 
-	private _replaceDocument(nextDoc: ICgEventsDocument) {
+	private _replaceDocument(nextDoc: ICgEventsDocument): boolean {
 		if (!this._entry) {
-			return;
+			return false;
 		}
-
 		const currentJson = this._entry.json;
-
-		// Avoid creating new objects if content hasn't changed
-		if (currentJson) {
-			const configChanged = currentJson.config !== nextDoc.config;
-			const eventsChanged = currentJson.events !== nextDoc.events;
-
-			if (!configChanged && !eventsChanged) {
-				// No actual changes, skip update
-				return;
-			}
+		if (currentJson.config === nextDoc.config && currentJson.events === nextDoc.events) {
+			return false;
 		}
-
-		// Only create new json object if something actually changed
-		const nextJson = {
-			...(currentJson ?? {}),
-			config: nextDoc.config,
-			events: nextDoc.events,
-		};
-
 		this._entry = {
 			...this._entry,
-			json: nextJson,
+			json: {
+				...currentJson,
+				config: nextDoc.config,
+				events: nextDoc.events,
+			},
 		};
-		this._emitChange();
+		return true;
 	}
 
 	setCgEventsJson(json: ICgEventsParseResult) {
-		this._parseResult = json;
+		this._documentVersion = json.documentVersion;
+		if (json.format !== 'error' && this._entry?.format === json.format && ObjectUtil.equals(this._entry.json, json.json)) {
+			this._format = json.format;
+			this._entry = { ...this._entry, documentVersion: json.documentVersion };
+			return;
+		}
+		this._format = json.format;
 		this.eventOrderVersion = 0;
 		this.clearHistory();
 		this.cachedEventsRef = undefined;
 		this.cachedEventById.clear();
 		this.cachedEventIndexById.clear();
-		this.logicBlockUiKeyByBlock = new WeakMap<ICgEventLogicBlock, string>();
-		this.nextLogicBlockUiKey = 1;
+		this.logicBlockUiIdentity.reset();
 		if (json.format === 'error') {
 			this._parseError = json.error;
 			this._entry = undefined;
@@ -914,7 +736,7 @@ export class CgEventsEditor extends EventEmitter {
 		this._emitChange(EditorChangeEvents.SCHEMA_UPDATED);
 	}
 
-	setCgApp(cgapp: ICgAppInfo) {
+	setCgApp(cgapp: ICgAppInfo | undefined) {
 		if (this._cgapp === cgapp) {
 			return;
 		}
@@ -929,7 +751,7 @@ export class CgEventsEditor extends EventEmitter {
 		this._emitChange(EditorChangeEvents.SORTING_PRESETS_UPDATED, { data: presets });
 	}
 
-	setItems(items: any) {
+	setItems(items: ICgItemInfoList | undefined) {
 		if (this._items === items) {
 			return;
 		}
@@ -953,15 +775,12 @@ export class CgEventsEditor extends EventEmitter {
 	}
 
 	private setEvents(events: ICgEvent[], isReorder = false) {
-		const safeEvents = Array.isArray(events) ? events : [];
 		const doc = this.getEventsJson();
-		if (!doc) { return; }
-
-		this._replaceDocument({ ...doc, events: safeEvents });
-
+		if (!doc || !this._replaceDocument({ ...doc, events })) {
+			return;
+		}
 		if (isReorder) {
 			this.eventOrderVersion++;
-			this.emit('events-reordered', safeEvents);
 		}
 	}
 
@@ -970,109 +789,57 @@ export class CgEventsEditor extends EventEmitter {
 		if (!doc) {
 			return;
 		}
-		const nextEvent: ICgEvent = {
-			id: this._generateEventId(doc.events),
-			folder: partial?.folder ?? '',
-			disabled: false,
-			startTime: 0,
-			checkInterval: 10,
-			repeatInterval: 0,
-			repeats: 0,
-			devOnly: false,
-			referenceOnly: false,
-			color: '#ffffff',
-			actions: [],
-			checks: [],
-			triggers: [],
-		};
+		const nextEvent = createDefaultEvent(
+			generateEventId(doc.events),
+			{ folder: partial?.folder },
+		);
 		this.setEvents([...doc.events, nextEvent]);
 		this._emitChange(EditorChangeEvents.EVENT_ADDED, { eventId: nextEvent.id, event: nextEvent });
 		return { event: nextEvent, index: doc.events.length };
 	}
 
-	private _deepClone<T>(value: T): T {
-		try {
-			if (typeof structuredClone === 'function') {
-				return structuredClone(value);
-			}
-		} catch {
-			// fallback below
-		}
-		try {
-			return JSON.parse(JSON.stringify(value));
-		} catch {
-			return value;
-		}
-	}
-
-	private cloneEntry(entry?: ICgEventsParseSuccess): ICgEventsParseSuccess | undefined {
-		if (!entry) {
-			return undefined;
-		}
-		const clonedJson = this._deepClone(entry.json) ?? entry.json;
-		return { format: entry.format, json: clonedJson };
-	}
-
-	private restoreEntry(entry?: ICgEventsParseSuccess, parseError?: any) {
+	private restoreEntry(
+		entry?: ICgEventsParseSuccess,
+		parseError?: any,
+		format?: ICgEventsFormat,
+	) {
 		this._entry = entry;
 		this._parseError = parseError;
+		this._format = entry?.format ?? format;
 		this._emitChange(EditorChangeEvents.DOCUMENT_UPDATED);
 	}
 
 	private replaceEntryJson(nextJson: ICgEventsDocument) {
+		const documentVersion = this._entry?.documentVersion ?? this._documentVersion;
 		if (!this._entry) {
-			this._entry = { format: 'json', json: nextJson };
+			this._entry = { format: 'json', json: nextJson, documentVersion };
 		} else {
-			this._entry = { ...this._entry, json: nextJson };
+			this._entry = { ...this._entry, json: nextJson, documentVersion };
 		}
+		this._format = this._entry.format;
 		this._parseError = undefined;
 		this._emitChange(EditorChangeEvents.DOCUMENT_UPDATED);
 	}
 
-	private _generateDuplicateEventId(baseId: string, events: ICgEvent[]): string {
-		const existing = new Set(events.map((evt) => evt.id));
-		let idx = 1;
-		let candidate = `${baseId}_copy${idx}`;
-		while (existing.has(candidate)) {
-			idx += 1;
-			candidate = `${baseId}_copy${idx}`;
-		}
-		return candidate;
-	}
 
 	private _duplicateEvent(eventId: string): { event: ICgEvent; index: number } | undefined {
 		const events = this._getEvents();
 		if (!events) { return; }
 
-		const idx = events.findIndex((e) => e.id === eventId);
+		const idx = this.getEventIndex(eventId);
 		if (idx === -1) { return; }
 
 		const sourceEvent = events[idx];
 		if (!sourceEvent) { return; }
 
-		const nextId = this._generateDuplicateEventId(sourceEvent.id, events);
-		const clonedEvent: ICgEvent = { ...this._deepClone(sourceEvent), id: nextId };
+		const nextId = generateDuplicateEventId(sourceEvent.id, events);
+		const clonedEvent: ICgEvent = { ...cloneEditorValue(sourceEvent), id: nextId };
 
 		const newEvents = [...events];
 		newEvents.splice(idx + 1, 0, clonedEvent);
 		this.setEvents(newEvents);
 		this._emitChange(EditorChangeEvents.EVENT_ADDED, { eventId: clonedEvent.id, event: clonedEvent });
 		return { event: clonedEvent, index: idx + 1 };
-	}
-
-	private _generateEventId(events: ICgEvent[]): string {
-		const existing = new Set(events.map((evt) => evt.id));
-		let idx = 1;
-		let candidate = this._formatEventId(idx);
-		while (existing.has(candidate)) {
-			idx += 1;
-			candidate = this._formatEventId(idx);
-		}
-		return candidate;
-	}
-
-	private _formatEventId(idx: number) {
-		return `event_${String(idx).padStart(4, '0')}`;
 	}
 
 	getCurrentEntry(): ICgEventsParseSuccess | undefined {
@@ -1082,8 +849,9 @@ export class CgEventsEditor extends EventEmitter {
 		}
 		return {
 			format: this._entry.format,
+			documentVersion: this._entry.documentVersion,
 			json: {
-				...(this._entry.json ?? {}),
+				...this._entry.json,
 				config: doc.config,
 				events: doc.events,
 			},
@@ -1091,34 +859,41 @@ export class CgEventsEditor extends EventEmitter {
 	}
 
 	setFormat(format: Exclude<ICgEventsFormat, 'error'>) {
-		if (!this._entry) {
+		if (!this._entry || this._entry.format === format) {
 			return;
 		}
 		this._entry = {
 			...this._entry,
 			format,
 		};
+		this._format = format;
 		this._emitChange(EditorChangeEvents.FORMAT_UPDATED);
 	}
 
 	applyJsonText(raw: string): Error | null {
 		try {
-			const previousEntry = this.cloneEntry(this._entry);
+			const parsed: unknown = JSON.parse(raw);
+			if (!isCgEventsDocument(parsed)) {
+				throw new Error('Invalid events document structure');
+			}
+			if (this._entry && ObjectUtil.equals(this._entry.json, parsed)) {
+				return null;
+			}
+			const previousEntry = cloneEditorEntry(this._entry);
 			const previousError = this._parseError;
-			const parsed = JSON.parse(raw);
+			const previousFormat = this.getEventsFormat();
 			this.replaceEntryJson(parsed);
-			const nextEntry = this.cloneEntry(this._entry);
+			const nextEntry = cloneEditorEntry(this._entry);
+			const nextFormat = this.getEventsFormat();
 			if (nextEntry) {
 				this.recordHistory({
-					undo: () => this.restoreEntry(previousEntry, previousError),
-					redo: () => this.restoreEntry(nextEntry, undefined),
+					undo: () => this.restoreEntry(previousEntry, previousError, previousFormat),
+					redo: () => this.restoreEntry(nextEntry, undefined, nextFormat),
 				});
 			}
 			return null;
 		} catch (e) {
 			const err = e instanceof Error ? e : new Error(String(e));
-			this._parseError = err;
-			this._emitChange(EditorChangeEvents.DOCUMENT_UPDATED);
 			return err;
 		}
 	}
@@ -1133,7 +908,10 @@ export class CgEventsEditor extends EventEmitter {
 		if (!events) {
 			return;
 		}
-		const safeIndex = Math.max(0, Math.min(index, events.length));
+		const safeIndex = normalizeClampedIndex(index, events.length);
+		if (safeIndex === undefined) {
+			return;
+		}
 		const nextEvents = [...events];
 		nextEvents.splice(safeIndex, 0, event);
 		this.setEvents(nextEvents);
@@ -1159,28 +937,40 @@ export class CgEventsEditor extends EventEmitter {
 		if (!events || index < 0 || index >= events.length) {
 			return;
 		}
+		const previousEvent = events[index];
+		if (!previousEvent) {
+			return;
+		}
 		const nextEvents = [...events];
 		nextEvents[index] = nextEvent;
 		this.setEvents(nextEvents);
-		this._emitChange(EditorChangeEvents.EVENT_UPDATED, { eventId: nextEvent.id, event: nextEvent });
+		this._emitChange(EditorChangeEvents.EVENT_UPDATED, {
+			eventId: nextEvent.id,
+			previousEventId: previousEvent.id,
+			event: nextEvent,
+			previousEvent,
+		});
 	}
 
-	private moveEventByIndex(index: number, target: number) {
+	private moveEventByIndex(index: number, target: number): { fromIndex: number; toIndex: number; event: ICgEvent } | undefined {
 		const events = this._getEvents();
 		if (!events || index < 0 || index >= events.length) {
 			return;
 		}
-		const safeTarget = Math.max(0, Math.min(target, events.length - 1));
-		if (safeTarget === index) {
+		const sourceIndex = normalizeClampedIndex(index, events.length - 1);
+		const safeTarget = normalizeClampedIndex(target, events.length - 1);
+		if (sourceIndex === undefined || safeTarget === undefined || safeTarget === sourceIndex) {
 			return;
 		}
 		const nextEvents = [...events];
-		const [item] = nextEvents.splice(index, 1);
+		const [item] = nextEvents.splice(sourceIndex, 1);
+		if (!item) {
+			return;
+		}
 		nextEvents.splice(safeTarget, 0, item);
 		this.setEvents(nextEvents, true);
-		if (item) {
-			this._emitChange(EditorChangeEvents.EVENT_MOVED, { eventId: item.id, event: item });
-		}
+		this._emitChange(EditorChangeEvents.EVENT_MOVED, { eventId: item.id, event: item });
+		return { fromIndex: sourceIndex, toIndex: safeTarget, event: item };
 	}
 
 	private insertLogicAtIndex(
@@ -1189,251 +979,146 @@ export class CgEventsEditor extends EventEmitter {
 		block: ICgEventLogicBlock,
 		index: number
 	) {
-		const events = this._getEvents();
-		if (!events) {
-			return;
-		}
-		const blockKey = this.getBlockKey(blockType);
-		const nextEvents = events.map((event) => {
-			if (event.id !== eventId) {
-				return event;
-			}
-			const sectionArr = Array.isArray(event[blockKey]) ? event[blockKey] : [];
-			const nextSection = [...sectionArr];
-			const safeIndex = Math.max(0, Math.min(index, nextSection.length));
-			nextSection.splice(safeIndex, 0, block);
-			return { ...event, [blockKey]: nextSection };
-		});
+		const target = this.getLogicSectionTarget(eventId, blockType);
+		if (!target) return;
+		const nextSection = [...target.section];
+		const safeIndex = normalizeClampedIndex(index, nextSection.length);
+		if (safeIndex === undefined) return;
+		nextSection.splice(safeIndex, 0, block);
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
 		this.setEvents(nextEvents);
 		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_ADDED`], { eventId, blockType, index, data: block });
 	}
 
 	private removeLogicAtIndex(eventId: string, blockType: EventBlockType, index: number): ICgEventLogicBlock | undefined {
-		const events = this._getEvents();
-		if (!events) {
-			return undefined;
-		}
-		let removed: ICgEventLogicBlock | undefined;
-		const blockKey = this.getBlockKey(blockType);
-		const nextEvents = events.map((event) => {
-			if (event.id !== eventId) {
-				return event;
-			}
-			const sectionArr = Array.isArray(event[blockKey]) ? event[blockKey] : [];
-			if (index < 0 || index >= sectionArr.length) {
-				return event;
-			}
-			const nextSection = [...sectionArr];
-			[removed] = nextSection.splice(index, 1);
-			return { ...event, [blockKey]: nextSection };
-		});
+		const target = this.getLogicMutationTarget(eventId, blockType, index);
+		if (!target) return undefined;
+		const nextSection = [...target.section];
+		const [removed] = nextSection.splice(index, 1);
+		if (!removed) return undefined;
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
 		this.setEvents(nextEvents);
-		if (removed) {
-			this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_REMOVED`], { eventId, blockType, index });
-		}
+		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_REMOVED`], { eventId, blockType, index });
 		return removed;
 	}
 
 	private replaceLogicDataAtIndex(eventId: string, blockType: EventBlockType, index: number, data: any) {
-		const events = this._getEvents();
-		if (!events) {
-			return;
-		}
-		const blockKey = this.getBlockKey(blockType);
-		const nextEvents = events.map((event) => {
-			if (event.id !== eventId) {
-				return event;
-			}
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr) || !sectionArr[index]) {
-				return event;
-			}
-			const nextSection = [...sectionArr];
-			const previousBlock = nextSection[index];
-			const nextBlock = { ...previousBlock, data };
-			this.transferLogicBlockUiKey(previousBlock, nextBlock);
-			nextSection[index] = nextBlock;
-			return { ...event, [blockKey]: nextSection };
-		});
+		const target = this.getLogicMutationTarget(eventId, blockType, index);
+		if (!target || ObjectUtil.equals(target.block.data, data)) return;
+		const nextBlock = { ...target.block, data };
+		this.transferLogicBlockUiKey(target.block, nextBlock);
+		const nextSection = [...target.section];
+		nextSection[index] = nextBlock;
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
 		this.setEvents(nextEvents);
 		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`], { eventId, blockType, index, data });
 	}
 
-	private moveLogicWithinEvent(eventId: string, blockType: EventBlockType, index: number, target: number) {
-		const events = this._getEvents();
-		if (!events) {
-			return;
-		}
-		const blockKey = this.getBlockKey(blockType);
-		const nextEvents = events.map((event) => {
-			if (event.id !== eventId) {
-				return event;
-			}
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr) || index < 0 || index >= sectionArr.length) {
-				return event;
-			}
-			const safeTarget = Math.max(0, Math.min(target, sectionArr.length - 1));
-			if (safeTarget === index) {
-				return event;
-			}
-			const nextSection = [...sectionArr];
-			const [item] = nextSection.splice(index, 1);
-			nextSection.splice(safeTarget, 0, item);
-			return { ...event, [blockKey]: nextSection };
+	private applyLogicMoveWithinEvent(
+		blockType: EventBlockType,
+		result: LogicBlockMoveResult | undefined,
+	): LogicBlockMoveResult | undefined {
+		if (!result) return;
+		this.setEvents(result.nextEvents);
+		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_MOVED`], {
+			eventId: result.sourceEventId,
+			blockType,
+			index: result.sourceIndex,
 		});
-		this.setEvents(nextEvents);
-		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_MOVED`], { eventId, blockType, index });
+		return result;
 	}
 
-	private setValueAtPath(source: any, path: string[], value: any): any {
-		if (path.length === 0) {
-			return value;
-		}
-		const [rawKey, ...rest] = path;
-		const isArray = Array.isArray(source);
-		const parsedIndex = Number(rawKey);
-		const key = isArray && Number.isFinite(parsedIndex) ? parsedIndex : rawKey;
-		let clone: any;
-		if (Array.isArray(source)) {
-			clone = [...source];
-		} else if (source && typeof source === 'object') {
-			clone = { ...source };
-		} else {
-			clone = isArray ? [] : {};
-		}
-		const sourceAny: any = source;
-		const current = source && typeof source === 'object' ? sourceAny[key] : undefined;
-		clone[key] = this.setValueAtPath(current, rest, value);
-		return clone;
+	private moveLogicWithinEvent(eventId: string, blockType: EventBlockType, index: number, target: number) {
+		const events = this._getEvents();
+		if (!events) return;
+		this.applyLogicMoveWithinEvent(
+			blockType,
+			moveLogicBlockToIndex(
+				events,
+				this.getBlockKey(blockType),
+				this.getEventIndex(eventId),
+				index,
+				target,
+			),
+		);
 	}
 
 	private _toggleEventDisabled(eventId: string): { index: number; previous: ICgEvent; next: ICgEvent } | undefined {
 		const events = this._getEvents();
 		if (!events) { return; }
-		const newEvents = events.map((e) =>
-			e.id === eventId ? { ...e, disabled: !e.disabled } : e
-		);
-		this.setEvents(newEvents);
-		const updatedEvent = newEvents.find(e => e.id === eventId);
-		const previousEvent = events.find(e => e.id === eventId);
-		const index = events.findIndex(e => e.id === eventId);
-		if (updatedEvent) {
-			this._emitChange(EditorChangeEvents.EVENT_UPDATED, { eventId, event: updatedEvent });
-		}
-		if (!updatedEvent || !previousEvent || index === -1) {
-			return;
-		}
+		const index = this.getEventIndex(eventId);
+		if (index === -1) { return; }
+		const previousEvent = events[index];
+		if (!previousEvent) { return; }
+		const updatedEvent = { ...previousEvent, disabled: !previousEvent.disabled };
+		this.replaceEventAtIndex(index, updatedEvent);
 		return { index, previous: previousEvent, next: updatedEvent };
 	}
 
 	private _moveEvent(eventId: string, delta: number): { fromIndex: number; toIndex: number; event: ICgEvent } | undefined {
 		const events = this._getEvents();
 		if (!events) { return; }
-		const idx = events.findIndex((e) => e.id === eventId);
-		if (idx === -1) { return; }
-		const target = idx + delta;
-		if (target < 0 || target >= events.length) { return; }
-
-		const newEvents = [...events];
-		const [item] = newEvents.splice(idx, 1);
-		newEvents.splice(target, 0, item);
-		this.setEvents(newEvents, true); // true = reorder only
-		this._emitChange(EditorChangeEvents.EVENT_MOVED, { eventId, event: item });
-		if (!item) {
-			return;
-		}
-		return { fromIndex: idx, toIndex: target, event: item };
+		const index = this.getEventIndex(eventId);
+		if (index === -1) { return; }
+		const target = resolveRelativeIndex(index, delta, events.length);
+		if (target === undefined || target === index) { return; }
+		return this.moveEventByIndex(index, target);
 	}
 
 	private _toggleLogicDisabled(eventId: string, blockType: EventBlockType, index: number): { previous: any; next: any } | undefined {
-		const events = this._getEvents();
-		if (!events) { return; }
-
-		let previousData: any;
-		let nextData: any;
-		let found = false;
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr) || !sectionArr[index]) { return e; }
-
-			const current = sectionArr[index];
-			const data = current?.data || {};
-			const nextDisable = !data.disabled;
-			previousData = data;
-			nextData = { ...data, disabled: nextDisable };
-			found = true;
-
-			const newSectionArr = [...sectionArr];
-			const nextBlock = { ...current, data: nextData };
-			this.transferLogicBlockUiKey(current, nextBlock);
-			newSectionArr[index] = nextBlock;
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents);
+		const target = this.getLogicMutationTarget(eventId, blockType, index);
+		if (!target) return;
+		const previousData = target.block.data || {};
+		const nextData = { ...previousData, disabled: !previousData.disabled };
+		const nextBlock = { ...target.block, data: nextData };
+		this.transferLogicBlockUiKey(target.block, nextBlock);
+		const nextSection = [...target.section];
+		nextSection[index] = nextBlock;
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
+		this.setEvents(nextEvents);
 		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
 		this._emitChange(eventType, { eventId, blockType, index });
-		if (!found) {
-			return;
-		}
 		return { previous: previousData, next: nextData };
 	}
 
 	private _moveLogic(eventId: string, blockType: EventBlockType, index: number, delta: number): { fromIndex: number; toIndex: number } | undefined {
 		const events = this._getEvents();
-		if (!events) { return; }
-
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr)) { return e; }
-			const target = index + delta;
-			if (index < 0 || index >= sectionArr.length || target < 0 || target >= sectionArr.length) { return e; }
-
-			const newSectionArr = [...sectionArr];
-			const [item] = newSectionArr.splice(index, 1);
-			newSectionArr.splice(target, 0, item);
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents); // Logic reorder affects event data
-		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_MOVED`];
-		this._emitChange(eventType, { eventId, blockType, index });
-		const targetIndex = index + delta;
-		if (targetIndex < 0) {
-			return;
-		}
-		return { fromIndex: index, toIndex: targetIndex };
+		if (!events) return;
+		const result = this.applyLogicMoveWithinEvent(
+			blockType,
+			moveLogicBlockByDelta(
+				events,
+				this.getBlockKey(blockType),
+				this.getEventIndex(eventId),
+				index,
+				delta,
+			),
+		);
+		return result
+			? { fromIndex: result.sourceIndex, toIndex: result.targetIndex }
+			: undefined;
 	}
 
 	private _moveLogicToIndex(eventId: string, blockType: EventBlockType, index: number, targetIndex: number): { fromIndex: number; toIndex: number } | undefined {
 		const events = this._getEvents();
-		if (!events) { return; }
-
-		let finalIndex = -1;
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr)) { return e; }
-			if (index < 0 || index >= sectionArr.length) { return e; }
-
-			const newSectionArr = [...sectionArr];
-			const [item] = newSectionArr.splice(index, 1);
-			const insertAt = Math.max(0, Math.min(targetIndex, newSectionArr.length));
-			newSectionArr.splice(insertAt, 0, item);
-			finalIndex = insertAt;
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents); // Logic reorder affects event data
-		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_MOVED`];
-		this._emitChange(eventType, { eventId, blockType, index });
-		if (finalIndex < 0) {
-			return;
-		}
-		return { fromIndex: index, toIndex: finalIndex };
+		if (!events) return;
+		const result = this.applyLogicMoveWithinEvent(
+			blockType,
+			moveLogicBlockToIndex(
+				events,
+				this.getBlockKey(blockType),
+				this.getEventIndex(eventId),
+				index,
+				targetIndex,
+			),
+		);
+		return result
+			? { fromIndex: result.sourceIndex, toIndex: result.targetIndex }
+			: undefined;
 	}
 
 	private _moveLogicToEvent(
@@ -1442,70 +1127,36 @@ export class CgEventsEditor extends EventEmitter {
 		index: number,
 		targetEventId: string,
 		targetIndex?: number,
-	): { sourceEventId: string; targetEventId: string; sourceIndex: number; targetIndex: number; block: ICgEventLogicBlock } | undefined {
+	): LogicBlockMoveResult | undefined {
 		const events = this._getEvents();
-		if (!events) { return; }
+		if (!events) return;
+		const result = moveLogicBlockToEvent(
+			events,
+			this.getBlockKey(blockType),
+			this.getEventIndex(eventId),
+			index,
+			this.getEventIndex(targetEventId),
+			targetIndex,
+		);
+		if (!result) return;
 
-		const sourceEvt = events.find(e => e.id === eventId);
-		if (!sourceEvt) { return; }
-		const blockKey = this.getBlockKey(blockType);
-		const sourceArr = sourceEvt[blockKey];
-		if (!Array.isArray(sourceArr) || !sourceArr[index]) { return; }
-		const itemToMove = sourceArr[index];
-		const targetEvt = events.find(e => e.id === targetEventId);
-		const targetArr = Array.isArray(targetEvt?.[blockKey]) ? targetEvt[blockKey] : [];
-		const insertAt = targetIndex === undefined
-			? targetArr.length
-			: Math.max(0, Math.min(targetIndex, targetArr.length));
-
-		// If source and target are the same, use normal move logic
-		if (eventId === targetEventId) {
-			const targetIdx = targetIndex ?? (sourceArr.length - 1);
-			const moveResult = this._moveLogicToIndex(eventId, blockType, index, targetIdx);
-			if (!moveResult) {
-				return;
-			}
-			return {
-				sourceEventId: eventId,
-				targetEventId,
-				sourceIndex: moveResult.fromIndex,
-				targetIndex: moveResult.toIndex,
-				block: itemToMove,
-			};
+		if (result.sourceEventId === result.targetEventId) {
+			return this.applyLogicMoveWithinEvent(blockType, result);
 		}
 
-		const newEvents = events.map(e => {
-			if (e.id === eventId) {
-				// Remove from source
-				const sectionArr = e[blockKey];
-				const newArr = [...(Array.isArray(sectionArr) ? sectionArr : [])];
-				newArr.splice(index, 1);
-				return { ...e, [blockKey]: newArr };
-			}
-			if (e.id === targetEventId) {
-				// Add to target
-				const sectionArr = e[blockKey];
-				const newArr = [...(Array.isArray(sectionArr) ? sectionArr : [])];
-				const insertAt = targetIndex === undefined
-					? newArr.length
-					: Math.max(0, Math.min(targetIndex, newArr.length));
-				newArr.splice(insertAt, 0, itemToMove);
-				return { ...e, [blockKey]: newArr };
-			}
-			return e;
+		this.setEvents(result.nextEvents);
+		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_REMOVED`], {
+			eventId,
+			blockType,
+			index,
 		});
-		this.setEvents(newEvents);
-		const removeType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_REMOVED`];
-		this._emitChange(removeType, { eventId, blockType, index });
-		const addType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_ADDED`];
-		this._emitChange(addType, { eventId: targetEventId, blockType, index: insertAt, data: itemToMove });
-		return {
-			sourceEventId: eventId,
-			targetEventId,
-			sourceIndex: index,
-			targetIndex: insertAt,
-			block: itemToMove,
-		};
+		this._emitChange(EditorChangeEvents[`${ebtConv.UPPER[blockType]}_ADDED`], {
+			eventId: targetEventId,
+			blockType,
+			index: result.targetIndex,
+			data: result.block,
+		});
+		return result;
 	}
 
 	private _moveLogicSelectionToEvent(
@@ -1513,138 +1164,37 @@ export class CgEventsEditor extends EventEmitter {
 		selection: Array<{ eventId: string; index: number; block: ICgEventLogicBlock }>,
 		targetEventId: string,
 		targetIndex: number
-	): { previousEvents: ICgEvent[]; nextEvents: ICgEvent[]; affectedEventIds: string[] } | undefined {
+	): LogicSelectionMutationResult | undefined {
 		const events = this._getEvents();
-		if (!events || selection.length === 0) {
+		if (!events) {
 			return;
 		}
-
-		const blockKey = this.getBlockKey(blockType);
-		const targetEvent = events.find((evt) => evt.id === targetEventId);
-		const targetArr = targetEvent ? targetEvent[blockKey] : undefined;
-		if (!Array.isArray(targetArr)) {
-			return;
-		}
-
-		const removalsByEvent = new Map<string, number[]>();
-		const affectedEventIds: string[] = [];
-
-		for (let i = 0; i < selection.length; i++) {
-			const entry = selection[i];
-			if (!entry) {
-				continue;
-			}
-			const indices = removalsByEvent.get(entry.eventId);
-			if (indices) {
-				indices.push(entry.index);
-				continue;
-			}
-			removalsByEvent.set(entry.eventId, [entry.index]);
-			affectedEventIds.push(entry.eventId);
-		}
-
-		if (!removalsByEvent.has(targetEventId)) {
-			affectedEventIds.push(targetEventId);
-		}
-
-		const blocksToInsert: ICgEventLogicBlock[] = [];
-		for (let i = 0; i < selection.length; i++) {
-			const block = selection[i]?.block;
-			if (block) {
-				blocksToInsert.push(block);
-			}
-		}
-		if (blocksToInsert.length === 0) {
-			return;
-		}
-
-		for (const indices of removalsByEvent.values()) {
-			indices.sort((a, b) => b - a);
-		}
-
-		const insertAtTarget = Math.max(0, Math.min(Math.floor(targetIndex), targetArr.length));
-
-		const nextEvents = events.map((event) => {
-			const eventId = event.id;
-			const isTarget = eventId === targetEventId;
-			const removalIndices = removalsByEvent.get(eventId);
-			if (!isTarget && (!removalIndices || removalIndices.length === 0)) {
-				return event;
-			}
-
-			const sectionArr = event[blockKey];
-			if (!Array.isArray(sectionArr)) {
-				return event;
-			}
-
-			let nextSection = sectionArr;
-			if (removalIndices && removalIndices.length > 0) {
-				const cloned = [...nextSection];
-				for (let i = 0; i < removalIndices.length; i++) {
-					const index = removalIndices[i];
-					if (index >= 0 && index < cloned.length) {
-						cloned.splice(index, 1);
-					}
-				}
-				nextSection = cloned;
-			}
-
-			if (isTarget) {
-				const base = nextSection === sectionArr ? [...nextSection] : nextSection;
-				const insertAt = Math.max(0, Math.min(insertAtTarget, base.length));
-				for (let i = 0; i < blocksToInsert.length; i++) {
-					const block = blocksToInsert[i];
-					const clone: ICgEventLogicBlock = {
-						type: block?.type ?? '',
-						data: block?.data ? { ...block.data } : {},
-					};
-					base.splice(insertAt + i, 0, clone);
-				}
-				nextSection = base;
-			}
-
-			if (nextSection === sectionArr) {
-				return event;
-			}
-			return { ...event, [blockKey]: nextSection };
-		});
-
-		this.setEvents(nextEvents);
-		const updateType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
-		for (let i = 0; i < affectedEventIds.length; i++) {
-			this._emitChange(updateType, { eventId: affectedEventIds[i], blockType });
-		}
-
-		return { previousEvents: events, nextEvents, affectedEventIds };
+		return this.applyLogicSelectionMutationResult(
+			blockType,
+			moveLogicSelectionToEvent(
+				events,
+				this.getBlockKey(blockType),
+				selection,
+				targetEventId,
+				targetIndex,
+			),
+		);
 	}
 
 	private _updateLogicData(eventId: string, blockType: EventBlockType, index: number, data: any): { previous: any; next: any } | undefined {
-		const events = this._getEvents();
-		if (!events) { return; }
-
-		let previousData: any;
-		let found = false;
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr) || !sectionArr[index]) { return e; }
-
-			const newSectionArr = [...sectionArr];
-			const previousBlock = newSectionArr[index];
-			previousData = previousBlock?.data;
-			found = true;
-			const nextBlock = { ...previousBlock, data };
-			this.transferLogicBlockUiKey(previousBlock, nextBlock);
-			newSectionArr[index] = nextBlock;
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents);
+		const target = this.getLogicMutationTarget(eventId, blockType, index);
+		if (!target) return;
+		const previousData = target.block.data;
+		if (ObjectUtil.equals(previousData, data)) return;
+		const nextBlock = { ...target.block, data };
+		this.transferLogicBlockUiKey(target.block, nextBlock);
+		const nextSection = [...target.section];
+		nextSection[index] = nextBlock;
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
+		this.setEvents(nextEvents);
 		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_UPDATED`];
 		this._emitChange(eventType, { eventId, blockType, index, data });
-		if (!found) {
-			return;
-		}
 		return { previous: previousData, next: data };
 	}
 
@@ -1655,66 +1205,30 @@ export class CgEventsEditor extends EventEmitter {
 		path: string[],
 		value: any,
 	): { previous: any; next: any } | undefined {
-		const events = this._getEvents();
-		if (!events) {
-			return;
-		}
-		const blockKey = this.getBlockKey(blockType);
-		const event = events.find((evt) => evt.id === eventId);
-		const sectionArr = event ? event[blockKey] : undefined;
-		if (!Array.isArray(sectionArr) || !sectionArr[index]) {
-			return;
-		}
-		const currentData = sectionArr[index]?.data ?? {};
-		const nextData = this.setValueAtPath(currentData, path, value);
+		const target = this.getLogicMutationTarget(eventId, blockType, index);
+		if (!target) return;
+		const currentData = target.block.data ?? {};
+		const nextData = setOwnValueAtPath(currentData, path, value);
+		if (ObjectUtil.equals(currentData, nextData)) return;
 		this.replaceLogicDataAtIndex(eventId, blockType, index, nextData);
 		return { previous: currentData, next: nextData };
 	}
 
 	private _removeLogic(eventId: string, blockType: EventBlockType, index: number): { index: number; block: ICgEventLogicBlock } | undefined {
-		const events = this._getEvents();
-		if (!events) { return; }
-
-		let removed: ICgEventLogicBlock | undefined;
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr) || index < 0 || index >= sectionArr.length) { return e; }
-
-			const newSectionArr = [...sectionArr];
-			[removed] = newSectionArr.splice(index, 1);
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents);
-		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_REMOVED`];
-		this._emitChange(eventType, { eventId, blockType, index });
-		if (!removed) {
-			return;
-		}
-		return { index, block: removed };
+		const block = this.removeLogicAtIndex(eventId, blockType, index);
+		return block ? { index, block } : undefined;
 	}
 
 	private _addLogic(eventId: string, blockType: EventBlockType, type: string): { index: number; block: ICgEventLogicBlock } | undefined {
-		const events = this._getEvents();
-		if (!events) { return; }
-
-		let insertIndex = -1;
+		const target = this.getLogicSectionTarget(eventId, blockType);
+		if (!target) return;
 		const newBlock: ICgEventLogicBlock = { type, data: {} };
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr)) { return e; }
-			insertIndex = sectionArr.length;
-			return { ...e, [blockKey]: [...sectionArr, newBlock] };
-		});
-		this.setEvents(newEvents);
+		const insertIndex = target.section.length;
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: [...target.section, newBlock] };
+		this.setEvents(nextEvents);
 		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_ADDED`];
 		this._emitChange(eventType, { eventId, blockType, index: insertIndex, data: newBlock });
-		if (insertIndex < 0) {
-			return;
-		}
 		return { index: insertIndex, block: newBlock };
 	}
 
@@ -1724,46 +1238,30 @@ export class CgEventsEditor extends EventEmitter {
 		block: ICgEventLogicBlock,
 		targetIndex?: number,
 	): { index: number; block: ICgEventLogicBlock } | undefined {
-		const events = this._getEvents();
-		if (!events) { return; }
-
-		let insertIndex = -1;
-		let insertedBlock: ICgEventLogicBlock | undefined;
-		const newEvents = events.map(e => {
-			if (e.id !== eventId) { return e; }
-			const blockKey = this.getBlockKey(blockType);
-			const sectionArr = e[blockKey];
-			if (!Array.isArray(sectionArr)) { return e; }
-
-			// Shallow copy is sufficient - the data object is not modified after insertion
-			const clone: ICgEventLogicBlock = {
-				type: block?.type ?? '',
-				data: block?.data ? { ...block.data } : {},
-			};
-			insertedBlock = clone;
-
-			const newSectionArr = [...sectionArr];
-			const insertAt = targetIndex === undefined
-				? newSectionArr.length
-				: Math.max(0, Math.min(targetIndex, newSectionArr.length));
-			newSectionArr.splice(insertAt, 0, clone);
-			insertIndex = insertAt;
-
-			return { ...e, [blockKey]: newSectionArr };
-		});
-		this.setEvents(newEvents);
+		const target = this.getLogicSectionTarget(eventId, blockType);
+		if (!target) return;
+		const insertedBlock: ICgEventLogicBlock = {
+			type: block?.type ?? '',
+			data: block?.data ? { ...block.data } : {},
+		};
+		const nextSection = [...target.section];
+		const insertIndex = targetIndex === undefined
+			? nextSection.length
+			: normalizeClampedIndex(targetIndex, nextSection.length);
+		if (insertIndex === undefined) return;
+		nextSection.splice(insertIndex, 0, insertedBlock);
+		const nextEvents = [...target.events];
+		nextEvents[target.eventIndex] = { ...target.event, [target.blockKey]: nextSection };
+		this.setEvents(nextEvents);
 		const eventType = EditorChangeEvents[`${ebtConv.UPPER[blockType]}_ADDED`];
 		this._emitChange(eventType, { eventId, blockType, index: insertIndex, data: block });
-		if (insertIndex < 0 || !insertedBlock) {
-			return;
-		}
 		return { index: insertIndex, block: insertedBlock };
 	}
 
 	private _removeEvent(eventId: string): { index: number; event: ICgEvent } | undefined {
 		const events = this._getEvents();
 		if (!events) { return; }
-		const index = events.findIndex((e) => e.id === eventId);
+		const index = this.getEventIndex(eventId);
 		if (index === -1) {
 			return;
 		}
@@ -1778,13 +1276,14 @@ export class CgEventsEditor extends EventEmitter {
 		const events = this._getEvents();
 		if (!events) { return; }
 
-		const idx = events.findIndex((e) => e.id === eventId);
+		const idx = this.getEventIndex(eventId);
 		if (idx === -1) { return; }
 
 		let nextPatch = patch;
 		if (typeof nextPatch.id === 'string') {
 			const trimmed = nextPatch.id.trim();
-			const duplicate = trimmed.length > 0 && events.some((e, i) => i !== idx && e.id === trimmed);
+			const existingIndex = trimmed.length > 0 ? this.getEventIndex(trimmed) : -1;
+			const duplicate = existingIndex !== -1 && existingIndex !== idx;
 			if (!trimmed || duplicate) {
 				return;
 			}
@@ -1793,37 +1292,41 @@ export class CgEventsEditor extends EventEmitter {
 			}
 		}
 
-		const newEvents = events.map((e, i) =>
-			i === idx ? { ...e, ...nextPatch } : e
-		);
-		this.setEvents(newEvents);
-		const updatedEvent = newEvents[idx];
-		if (updatedEvent) {
-			this._emitChange(EditorChangeEvents.EVENT_UPDATED, { eventId: updatedEvent.id, event: updatedEvent });
-		}
 		const previousEvent = events[idx];
-		if (!updatedEvent || !previousEvent) {
+		if (!previousEvent) {
 			return;
 		}
+		const patchKeys = Object.keys(nextPatch) as Array<keyof ICgEvent>;
+		if (patchKeys.length === 0 || patchKeys.every((key) => ObjectUtil.equals(previousEvent[key], nextPatch[key]))) {
+			return;
+		}
+		const updatedEvent = { ...previousEvent, ...nextPatch };
+		this.replaceEventAtIndex(idx, updatedEvent);
 		return { index: idx, previous: previousEvent, next: updatedEvent };
 	}
 
-	private _updateConfig(configPatch: Record<string, any>): { previous: Record<string, any>; next: Record<string, any> } | undefined {
+	private _updateConfig(configPatch: Partial<ICgEventsDocumentConfig>): { previous: ICgEventsDocumentConfig; next: ICgEventsDocumentConfig } | undefined {
 		const doc = this.getEventsJson();
 		if (!doc || !this._entry) { return; }
-		const previousConfig = { ...(doc.config ?? {}) };
+		const currentConfig = doc.config;
+		const patchKeys = Object.keys(configPatch) as Array<keyof ICgEventsDocumentConfig>;
+		if (patchKeys.length === 0 || patchKeys.every((key) => ObjectUtil.equals(currentConfig[key], configPatch[key]))) {
+			return;
+		}
+		const previousConfig = { ...currentConfig };
 		const nextConfig = { ...previousConfig, ...configPatch };
-		this._replaceDocument({ ...doc, config: nextConfig });
+		if (!this._replaceDocument({ ...doc, config: nextConfig })) {
+			return;
+		}
 		this._emitChange(EditorChangeEvents.CONFIG_UPDATED, { config: nextConfig });
 		return { previous: previousConfig, next: nextConfig };
 	}
 
-	private replaceConfig(nextConfig: Record<string, any>) {
+	private replaceConfig(nextConfig: ICgEventsDocumentConfig) {
 		const doc = this.getEventsJson();
-		if (!doc || !this._entry) {
+		if (!doc || !this._entry || !this._replaceDocument({ ...doc, config: nextConfig })) {
 			return;
 		}
-		this._replaceDocument({ ...doc, config: nextConfig });
 		this._emitChange(EditorChangeEvents.CONFIG_UPDATED, { config: nextConfig });
 	}
 }

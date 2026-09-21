@@ -1,4 +1,16 @@
+import type { EventBlockType } from '../../../editor/eventBlockTypes';
 import { EventEmitter } from '../../../utils/EventEmitter';
+
+export type LogicContextMenuOwner = 'list-item' | 'list-section' | 'section-header';
+
+export function createLogicContextMenuId(
+	owner: LogicContextMenuOwner,
+	eventId: string,
+	blockType: EventBlockType,
+	index?: number,
+): string {
+	return JSON.stringify([owner, eventId, blockType, index ?? null]);
+}
 
 /**
  * Context menu state manager

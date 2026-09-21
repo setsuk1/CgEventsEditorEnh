@@ -12,8 +12,10 @@ import { SvgPlus } from '../../svg/SvgPlus';
 import { SvgRemoveX } from '../../svg/SvgRemoveX';
 import { SvgTrash } from '../../svg/SvgTrash';
 import { HelperWidget } from '../widgets/HelperWidget';
+import { getRjsfImmediateCommitRequest } from '../widgets/RJSFImmediateCommit';
 import { isHelperFormat, isRecord, stripCgenhClasses } from '../utils/rjsfUtils';
 import { evaluateVisibleOption } from '../utils/visibleOption';
+import { resolveArrayFieldLayoutOptions, resolveNextArrayFieldCollapsedState } from './FieldLayout';
 
 /**
  * Render a single array item with controls
@@ -31,24 +33,21 @@ export class ArrayFieldItemTemplate extends React.PureComponent<ArrayFieldItemTe
 			onMoveUpItem,
 			onRemoveItem,
 		} = buttonsProps;
-		const formContext = this.props.registry?.formContext;
-		const commitArrayChange = isRecord(formContext) && typeof formContext.commitArrayChange === 'function'
-			? formContext.commitArrayChange
-			: undefined;
+		const requestImmediateCommit = getRjsfImmediateCommitRequest(this.props.registry?.formContext);
 		const handleMoveUp = (event: React.MouseEvent<HTMLButtonElement>) => {
-			commitArrayChange?.();
+			requestImmediateCommit?.();
 			onMoveUpItem(event);
 		};
 		const handleMoveDown = (event: React.MouseEvent<HTMLButtonElement>) => {
-			commitArrayChange?.();
+			requestImmediateCommit?.();
 			onMoveDownItem(event);
 		};
 		const handleCopy = (event: React.MouseEvent<HTMLButtonElement>) => {
-			commitArrayChange?.();
+			requestImmediateCommit?.();
 			onCopyItem(event);
 		};
 		const handleRemove = (event: React.MouseEvent<HTMLButtonElement>) => {
-			commitArrayChange?.();
+			requestImmediateCommit?.();
 			onRemoveItem(event);
 		};
 		const showToolbar = hasToolbar && (hasMoveUp || hasMoveDown || hasRemove || hasCopy);
@@ -132,46 +131,22 @@ interface ArrayFieldTemplateState {
 export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplateProps, ArrayFieldTemplateState> {
 	constructor(props: ArrayFieldTemplateProps) {
 		super(props);
-		const rawOptions = props.uiSchema?.['ui:options'];
-		const uiOptions = isRecord(rawOptions) ? rawOptions : {};
-		const classNames = typeof props.uiSchema?.['ui:classNames'] === 'string' ? props.uiSchema['ui:classNames'] : '';
-		const propsClassNames = typeof props.className === 'string' ? props.className : '';
-		const optionClassNames = typeof uiOptions.classNames === 'string' ? uiOptions.classNames : '';
-		const hasInlineLayout = uiOptions.oneRow === true
-			|| classNames.includes('cgenh-config-field--inline')
-			|| propsClassNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const hideHeader = hasInlineLayout || uiOptions.noHeader === true;
-		const collapsed = uiOptions.collapsed === true;
+		const layout = resolveArrayFieldLayoutOptions(props.uiSchema, props.className);
 		this.state = {
-			collapsed: hideHeader ? false : collapsed,
+			collapsed: layout.hideHeader ? false : layout.collapsed,
 		};
 	}
 
 	componentDidUpdate(prevProps: ArrayFieldTemplateProps): void {
-		const prevOptionsRaw = prevProps.uiSchema?.['ui:options'];
-		const prevOptions = isRecord(prevOptionsRaw) ? prevOptionsRaw : {};
-		const nextOptionsRaw = this.props.uiSchema?.['ui:options'];
-		const nextOptions = isRecord(nextOptionsRaw) ? nextOptionsRaw : {};
-		const prevCollapsed = prevOptions.collapsed === true;
-		const nextCollapsed = nextOptions.collapsed === true;
+		const previousLayout = resolveArrayFieldLayoutOptions(prevProps.uiSchema, prevProps.className);
+		const nextLayout = resolveArrayFieldLayoutOptions(this.props.uiSchema, this.props.className);
 
-		const classNames = typeof this.props.uiSchema?.['ui:classNames'] === 'string' ? this.props.uiSchema['ui:classNames'] : '';
-		const propsClassNames = typeof this.props.className === 'string' ? this.props.className : '';
-		const optionClassNames = typeof nextOptions.classNames === 'string' ? nextOptions.classNames : '';
-		const hasInlineLayout = nextOptions.oneRow === true
-			|| classNames.includes('cgenh-config-field--inline')
-			|| propsClassNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const hideHeader = hasInlineLayout || nextOptions.noHeader === true;
-
-		if (hideHeader) {
-			if (this.state.collapsed) {
-				this.setState({ collapsed: false });
-			}
-			return;
-		}
-		if (prevCollapsed !== nextCollapsed && this.state.collapsed !== nextCollapsed) {
+		const nextCollapsed = resolveNextArrayFieldCollapsedState(
+			this.state.collapsed,
+			previousLayout,
+			nextLayout,
+		);
+		if (nextCollapsed !== this.state.collapsed) {
 			this.setState({ collapsed: nextCollapsed });
 		}
 	}
@@ -182,25 +157,17 @@ export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplatePr
 
 	private handleRemoveAll = () => {
 		const formContext = this.props.registry?.formContext;
-		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') {
-			return;
-		}
-		// Convert fieldPathId.$id to path array: "root_parent_child" -> ["parent", "child"]
-		const currentId = this.props.fieldPathId?.$id || '';
-		const pathStr = currentId.replace(/^root_?/, '');
-		const path = pathStr ? pathStr.split('_') : [];
-		formContext.updateFormData(path, [], true);
+		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') return;
+		const fieldPath = this.props.fieldPathId?.path;
+		if (!Array.isArray(fieldPath)) return;
+		formContext.updateFormData(fieldPath, [], true);
 	};
 
 	private handleArrayHelperChange = (next: any) => {
 		const formContext = this.props.registry?.formContext;
-		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') {
-			return;
-		}
+		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') return;
 		const fieldPath = this.props.fieldPathId?.path;
-		if (!Array.isArray(fieldPath)) {
-			return;
-		}
+		if (!Array.isArray(fieldPath)) return;
 
 		let normalized = next;
 		if (normalized === undefined || normalized === null) {
@@ -228,26 +195,16 @@ export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplatePr
 		const hideLabel = uiSchema?.['ui:label'] === false;
 		const displayTitle = hideLabel ? '' : title;
 
-		const rawOptions = uiSchema?.['ui:options'];
-		const uiOptions = isRecord(rawOptions) ? rawOptions : {};
+		const layout = resolveArrayFieldLayoutOptions(uiSchema, this.props.className);
+		const { uiOptions } = layout;
 		const helper = typeof uiOptions.helper === 'string' ? uiOptions.helper : undefined;
 		const helperFormat = typeof uiOptions.format === 'string' ? uiOptions.format : undefined;
 		const hasSelectionHelper = typeof helper === 'string' && !!helper.trim();
 		const hasViewHelper = isHelperFormat(helperFormat);
-		const noHeader = uiOptions.noHeader === true;
-
-		const uiClassNames = typeof uiSchema?.['ui:classNames'] === 'string' ? uiSchema['ui:classNames'] : '';
-		const propsClassNames = typeof this.props.className === 'string' ? this.props.className : '';
-		const optionClassNames = typeof uiOptions.classNames === 'string' ? uiOptions.classNames : '';
-		const hasInlineLayout = uiOptions.oneRow === true
-			|| uiClassNames.includes('cgenh-config-field--inline')
-			|| propsClassNames.includes('cgenh-config-field--inline')
-			|| optionClassNames.includes('cgenh-config-field--inline');
-		const showHeader = !hasInlineLayout && !noHeader;
+		const showHeader = !layout.hideHeader;
 
 		const collapseId = this.props.fieldPathId?.$id || '';
 		const isRoot = !collapseId || collapseId === 'root';
-
 		const canCollapse = !isRoot && showHeader;
 		const effectiveCollapsed = canCollapse && this.state.collapsed;
 		const toggleLabel = effectiveCollapsed ? translation.list.expand.getTrans() : translation.list.collapse.getTrans();
@@ -259,30 +216,20 @@ export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplatePr
 
 		const formContext = this.props.registry?.formContext;
 		const rootFormData = isRecord(formContext) ? formContext.rootFormData : undefined;
-		const commitArrayChange = isRecord(formContext) && typeof formContext.commitArrayChange === 'function'
-			? formContext.commitArrayChange
-			: undefined;
+		const requestImmediateCommit = getRjsfImmediateCommitRequest(formContext);
 		const registerArrayAdd = isRecord(formContext) && typeof formContext.registerArrayAdd === 'function'
 			? formContext.registerArrayAdd
 			: undefined;
 		const handleAddClick = (event: React.MouseEvent<HTMLButtonElement>) => {
 			registerArrayAdd?.(this.props.fieldPathId.path, items.length, schema.items);
-			commitArrayChange?.();
+			requestImmediateCommit?.();
 			onAddClick(event);
 		};
 		const visibleOpt = uiOptions.visible;
-
-		// Get the current field's parent path from fieldPathId for resolving sibling references
-		// fieldPathId.$id format: "root_parent_child" -> convert to "parent.child"
-		const currentId = this.props.fieldPathId?.$id || '';
-		const currentPath = currentId.replace(/^root_?/, '').replace(/_/g, '.');
-		const parentPath = currentPath.split('.').slice(0, -1).join('.');
-
+		const parentPath = Array.isArray(this.props.fieldPathId?.path) ? this.props.fieldPathId.path.slice(0, -1) : [];
 		const isVisible = evaluateVisibleOption(visibleOpt, rootFormData, parentPath);
 
-		if (!isVisible) {
-			return <div className="d-none" />;
-		}
+		if (!isVisible) return <div className="d-none" />;
 
 		const helperWidgetBaseProps: WidgetProps | null = (hasSelectionHelper || hasViewHelper) ? (() => {
 			const fieldId = typeof this.props.fieldPathId?.$id === 'string' && this.props.fieldPathId.$id
@@ -290,10 +237,13 @@ export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplatePr
 				: 'array';
 			return {
 				id: `${fieldId}__helper`,
+				name: fieldId,
 				value: this.props.formData,
 				disabled: disabled || false,
 				readonly: readonly || false,
 				onChange: this.handleArrayHelperChange,
+				onBlur: (_id: string, _value: any) => undefined,
+				onFocus: (_id: string, _value: any) => undefined,
 				options: {
 					helper,
 					format: helperFormat,
@@ -307,7 +257,7 @@ export class ArrayFieldTemplate extends React.PureComponent<ArrayFieldTemplatePr
 				required: false,
 				autofocus: false,
 				placeholder: '',
-				rawErrors: [],
+				rawErrors: [] as string[],
 				registry: this.props.registry,
 				formContext: this.props.registry?.formContext,
 			};

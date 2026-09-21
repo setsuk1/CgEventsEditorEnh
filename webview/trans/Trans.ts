@@ -62,6 +62,7 @@ const json = {
 	},
 	settings: {
 		baseSettingsTitle: '',
+		baseSummary: '',
 		otherSettingsTitle: '',
 		configsTitle: '',
 		configSection: '',
@@ -218,7 +219,9 @@ const json = {
 		booleanFalse: '',
 	},
 	validation: {
+		required: '',
 		invalidJson: '',
+		dataChanged: '',
 		numberFormatError: '',
 		noItems: '',
 		noMatches: '',

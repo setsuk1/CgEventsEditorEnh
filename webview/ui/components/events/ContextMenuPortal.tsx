@@ -1,7 +1,8 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { winEE } from '../../../msg/WindowEventEmitter';
+import { CAPTURED_SCROLL_EVENT, winEE } from '../../../msg/WindowEventEmitter';
 import { DynamicStyle } from '../../utils/dynamicStyles';
+import { computeContextMenuPosition } from './ContextMenuPosition';
 
 interface ContextMenuPortalProps {
 	open: boolean;
@@ -17,41 +18,6 @@ interface ContextMenuPortalState {
 	menuHeight: number;
 	viewportWidth: number;
 	viewportHeight: number;
-}
-
-const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
-
-function computePosition(
-	anchorX: number,
-	anchorY: number,
-	width: number,
-	height: number,
-	padding: number,
-	viewportWidth: number,
-	viewportHeight: number,
-) {
-	const candidates = [
-		{ left: anchorX, top: anchorY },
-		{ left: anchorX, top: anchorY - height },
-		{ left: anchorX - width, top: anchorY - height },
-		{ left: anchorX - width, top: anchorY },
-	];
-
-	const fits = (left: number, top: number) =>
-		left >= padding &&
-		top >= padding &&
-		left + width <= viewportWidth - padding &&
-		top + height <= viewportHeight - padding;
-
-	for (const candidate of candidates) {
-		if (fits(candidate.left, candidate.top)) {
-			return candidate;
-		}
-	}
-
-	const left = clamp(anchorX, padding, viewportWidth - padding - width);
-	const top = clamp(anchorY, padding, viewportHeight - padding - height);
-	return { left, top };
 }
 
 export class ContextMenuPortal extends React.PureComponent<ContextMenuPortalProps, ContextMenuPortalState> {
@@ -98,29 +64,31 @@ export class ContextMenuPortal extends React.PureComponent<ContextMenuPortalProp
 	private attachListeners() {
 		if (this.listenersAttached) return;
 		this.listenersAttached = true;
-		winEE.on('resize', this.handleResize, this);
-		winEE.on('mousedown', this.handleMouseDown, this);
-		winEE.on('blur', this.handleBlur, this);
+		winEE.on('resize', this.handleResize);
+		winEE.on('mousedown', this.handleMouseDown);
+		winEE.on('blur', this.handleBlur);
+		winEE.on(CAPTURED_SCROLL_EVENT, this.handleScroll);
 	}
 
 	private detachListeners() {
 		if (!this.listenersAttached) return;
 		this.listenersAttached = false;
-		winEE.off('resize', this.handleResize, this);
-		winEE.off('mousedown', this.handleMouseDown, this);
-		winEE.off('blur', this.handleBlur, this);
+		winEE.off('resize', this.handleResize);
+		winEE.off('mousedown', this.handleMouseDown);
+		winEE.off('blur', this.handleBlur);
+		winEE.off(CAPTURED_SCROLL_EVENT, this.handleScroll);
 	}
 
-	private handleResize(this: ContextMenuPortal) {
+	private handleResize = () => {
 		const nextWidth = window.innerWidth;
 		const nextHeight = window.innerHeight;
 		if (nextWidth === this.state.viewportWidth && nextHeight === this.state.viewportHeight) {
 			return;
 		}
 		this.setState({ viewportWidth: nextWidth, viewportHeight: nextHeight });
-	}
+	};
 
-	private handleMouseDown(this: ContextMenuPortal, event: MouseEvent) {
+	private handleMouseDown = (event: MouseEvent) => {
 		const menu = this.menuRef.current;
 		if (!menu) {
 			return;
@@ -129,11 +97,17 @@ export class ContextMenuPortal extends React.PureComponent<ContextMenuPortalProp
 			return;
 		}
 		this.props.onClose();
-	}
+	};
 
-	private handleBlur(this: ContextMenuPortal) {
+	private handleBlur = () => {
 		this.props.onClose();
-	}
+	};
+
+	private handleScroll = (event: Event) => {
+		const menu = this.menuRef.current;
+		if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+		this.props.onClose();
+	};
 
 	private updateMenuHeight() {
 		const el = this.menuRef.current;
@@ -152,7 +126,7 @@ export class ContextMenuPortal extends React.PureComponent<ContextMenuPortalProp
 		const viewportPadding = 8;
 		const effectiveWidth = Math.max(0, Math.min(width, this.state.viewportWidth - viewportPadding * 2));
 		const effectiveMaxHeight = Math.max(0, this.state.viewportHeight - viewportPadding * 2);
-		const position = computePosition(
+		const position = computeContextMenuPosition(
 			anchorX,
 			anchorY,
 			effectiveWidth,

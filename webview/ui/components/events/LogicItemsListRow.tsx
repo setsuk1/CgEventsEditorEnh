@@ -122,13 +122,14 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 		);
 
 		let rowContent: React.ReactNode = logicCard;
-		if (this.props.isCheckSection) {
-			const railSize = CHECK_RAIL_BASE_PX + this.props.level * CHECK_INDENT_PX;
-			const railClassName = ['cgenh-check-rail', this.props.getCheckRailClass(railSize)].join(' ');
-			const canIndentLeft = this.props.level > 0;
-			const canIndentRight = this.props.breaks > 0;
-			const showIndentLeft = this.props.hasHierarchy && canIndentLeft;
-			const showIndentRight = this.props.hasHierarchy && canIndentRight;
+		const rowProps = this.props;
+		if (rowProps.isCheckSection) {
+			const railSize = CHECK_RAIL_BASE_PX + rowProps.level * CHECK_INDENT_PX;
+			const railClassName = ['cgenh-check-rail', rowProps.getCheckRailClass(railSize)].join(' ');
+			const canIndentLeft = rowProps.level > 0;
+			const canIndentRight = rowProps.breaks > 0;
+			const showIndentLeft = rowProps.hasHierarchy && canIndentLeft;
+			const showIndentRight = rowProps.hasHierarchy && canIndentRight;
 			const hasIndentButtons = showIndentLeft || showIndentRight;
 
 			const indentButtons = hasIndentButtons ? (
@@ -168,33 +169,33 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 				</div>
 			) : null;
 
-			const checkCardClassName = this.props.loopDisabled
+			const checkCardClassName = rowProps.loopDisabled
 				? 'cgenh-check-card cgenh-check-card--loop-disabled'
 				: 'cgenh-check-card';
 			const checkBodyClassName = [
 				'cgenh-check-body',
-				this.props.isSelected ? 'border border-2 border-primary cgenh-logic-row--selected' : '',
-				this.props.joinTop ? 'border-top-0 cgenh-logic-row--selected-join-top' : '',
-				this.props.joinBottom ? 'border-bottom-0 cgenh-logic-row--selected-join-bottom' : '',
+				rowProps.isSelected ? 'border border-2 border-primary cgenh-logic-row--selected' : '',
+				rowProps.joinTop ? 'border-top-0 cgenh-logic-row--selected-join-top' : '',
+				rowProps.joinBottom ? 'border-bottom-0 cgenh-logic-row--selected-join-bottom' : '',
 			].filter(Boolean).join(' ');
 
-			const showAndLines = this.props.andLineLevels.length > 0;
-			const showLogicMarker = showAndLines || this.props.showOr || this.props.hasNot;
+			const showAndLines = rowProps.andLineLevels.length > 0;
+			const showLogicMarker = showAndLines || rowProps.showOr || rowProps.hasNot;
 			const andLines = showAndLines ? (
 				<div className="cgenh-check-rail__and-lines" aria-hidden="true">
-					{this.props.andLineLevels.map((lineLevel) => {
-						const offset = this.props.level > lineLevel ? (this.props.level - lineLevel) * CHECK_INDENT_PX : 0;
+					{rowProps.andLineLevels.map((lineLevel) => {
+						const offset = rowProps.level > lineLevel ? (rowProps.level - lineLevel) * CHECK_INDENT_PX : 0;
 						const lineClassName = [
 							'cgenh-check-rail__and-line',
-							lineLevel === this.props.level && this.props.andStart ? 'cgenh-check-rail__and--start' : '',
-							lineLevel === this.props.level && this.props.andEnd ? 'cgenh-check-rail__and--end' : '',
+							lineLevel === rowProps.level && rowProps.andStart ? 'cgenh-check-rail__and--start' : '',
+							lineLevel === rowProps.level && rowProps.andEnd ? 'cgenh-check-rail__and--end' : '',
 						].filter(Boolean).join(' ');
-						const showTailStart = lineLevel === this.props.level && this.props.andStart;
-						const showTailEnd = lineLevel === this.props.level && this.props.andEnd;
+						const showTailStart = lineLevel === rowProps.level && rowProps.andStart;
+						const showTailEnd = lineLevel === rowProps.level && rowProps.andEnd;
 						return (
 							<span
 								key={`and-${index}-${lineLevel}`}
-								className={[lineClassName, this.props.getAndLineClass(offset)].join(' ')}
+								className={[lineClassName, rowProps.getAndLineClass(offset)].join(' ')}
 							>
 								{showTailStart && <span className="cgenh-check-rail__and-tail cgenh-check-rail__and-tail--start" />}
 								{showTailEnd && <span className="cgenh-check-rail__and-tail cgenh-check-rail__and-tail--end" />}
@@ -205,19 +206,19 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 			) : null;
 
 			const elseAndLineLevels = showAndLines
-				? (this.props.andEnd
-					? this.props.andLineLevels.filter((lineLevel) => lineLevel !== this.props.level)
-					: this.props.andLineLevels)
+				? (rowProps.andEnd
+					? rowProps.andLineLevels.filter((lineLevel) => lineLevel !== rowProps.level)
+					: rowProps.andLineLevels)
 				: [];
 
 			const elseAndLines = elseAndLineLevels.length > 0 ? (
 				<div className="cgenh-check-rail__and-lines" aria-hidden="true">
 					{elseAndLineLevels.map((lineLevel) => {
-						const offset = this.props.level > lineLevel ? (this.props.level - lineLevel) * CHECK_INDENT_PX : 0;
+						const offset = rowProps.level > lineLevel ? (rowProps.level - lineLevel) * CHECK_INDENT_PX : 0;
 						return (
 							<span
 								key={`and-else-${index}-${lineLevel}`}
-								className={['cgenh-check-rail__and-line', this.props.getAndLineClass(offset)].join(' ')}
+								className={['cgenh-check-rail__and-line', rowProps.getAndLineClass(offset)].join(' ')}
 							/>
 						);
 					})}
@@ -227,15 +228,15 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 			const logicMarker = showLogicMarker ? (
 				<>
 					{andLines}
-					{(this.props.showOr || this.props.hasNot) && (
+					{(rowProps.showOr || rowProps.hasNot) && (
 						<div className="cgenh-check-rail__stack" aria-hidden="true">
-							{this.props.showOr && (
+							{rowProps.showOr && (
 								<span className="cgenh-check-rail__or">
 									<span>O</span>
 									<span>R</span>
 								</span>
 							)}
-							{this.props.hasNot && <span className="cgenh-check-rail__not">!</span>}
+							{rowProps.hasNot && <span className="cgenh-check-rail__not">!</span>}
 						</div>
 					)}
 				</>
@@ -263,12 +264,12 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 				</div>
 			) : (
 				<div
-					className={['cgenh-check-rail', 'cgenh-check-rail--spacer', this.props.getCheckRailClass(railSize)].join(' ')}
+					className={['cgenh-check-rail', 'cgenh-check-rail--spacer', rowProps.getCheckRailClass(railSize)].join(' ')}
 					aria-hidden="true"
 				/>
 			);
 
-			const elseRow = this.props.currentElseEventId ? (
+			const elseRow = rowProps.currentElseEventId ? (
 				<div className="d-flex align-items-center gap-2 cgenh-else-row">
 					{elseRail}
 					<div className="d-flex align-items-center gap-2 ps-3 pb-1">
@@ -278,11 +279,11 @@ export class LogicItemsListRow extends React.PureComponent<LogicItemsListRowProp
 						<button
 							type="button"
 							className="btn btn-sm px-1 py-1 btn-outline-warning cgenh-else-link"
-							onClick={(event) => this.handleJumpToEvent(event, this.props.currentElseEventId ?? '')}
+							onClick={(event) => this.handleJumpToEvent(event, rowProps.currentElseEventId ?? '')}
 							onMouseEnter={playMouseHoverAudio}
 							onMouseDown={playMouseDownAudio}
 						>
-							{this.props.currentElseEventId}
+							{rowProps.currentElseEventId}
 						</button>
 					</div>
 				</div>

@@ -61,6 +61,7 @@ const json: TranslationJson = {
 	},
 	settings: {
 		baseSettingsTitle: 'Base Settings',
+		baseSummary: 'Stage {{size}}, {{resolution}}, {{alignment}}, preload {{includedResources}} resources and {{sourcesCount}} sources',
 		otherSettingsTitle: 'Other Settings',
 		configsTitle: 'Configs',
 		configSection: 'Configs',
@@ -217,7 +218,9 @@ const json: TranslationJson = {
 		booleanFalse: 'False',
 	},
 	validation: {
+		required: 'Required',
 		invalidJson: 'Invalid JSON',
+		dataChanged: 'This data changed outside this editor. Close and reopen it before saving to avoid overwriting newer changes.',
 		numberFormatError: 'Value must be type number.',
 		noItems: 'No items',
 		noMatches: 'No matches',

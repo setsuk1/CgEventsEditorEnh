@@ -4,12 +4,15 @@ import { editor } from '../../../editor/CgEventsEditor';
 import { ebtConv, EventBlockType } from '../../../editor/eventBlockTypes';
 import { winEE } from '../../../msg/WindowEventEmitter';
 import { translation } from '../../../trans/Trans';
-import { isRecord } from '../../rjsf/utils/rjsfUtils';
 import { FormHistory } from '../../utils/formHistory';
 import { handleUndoRedoShortcuts } from '../../utils/formUndoRedo';
+import { cloneDraftSnapshot } from '../../utils/draftSnapshot';
 import { acquireModalLock } from '../../utils/modalLock';
 import { FormHistoryControls } from '../common/FormHistoryControls';
 import { MonacoEditorComponent } from '../common/MonacoEditorComponent';
+import { isLogicListSnapshotCurrent } from './LogicDataDraft';
+import { normalizeLogicBlockList } from './LogicBlockData';
+import { selectionStateManager } from './SelectionState';
 
 interface LogicListJsonPanelProps {
 	eventId: string;
@@ -18,54 +21,22 @@ interface LogicListJsonPanelProps {
 }
 
 interface LogicListJsonPanelState {
-	draftBlocks: ICgEventLogicBlock[];
 	jsonText: string;
 	jsonError?: string;
 }
 
 interface LogicListJsonDraft {
-	draftBlocks: ICgEventLogicBlock[];
 	jsonText: string;
-}
-
-function cloneBlocks(value: ICgEventLogicBlock[]): ICgEventLogicBlock[] {
-	try {
-		return JSON.parse(JSON.stringify(value));
-	} catch {
-		return Array.isArray(value) ? [...value] : [];
-	}
 }
 
 function parseBlocks(text: string): { blocks?: ICgEventLogicBlock[]; error?: string } {
 	const rawText = text && text.trim() ? text : '[]';
 	try {
 		const parsed: unknown = JSON.parse(rawText);
-		if (!Array.isArray(parsed)) {
-			return { error: translation.validation.invalidJson.getTrans() };
-		}
-
-		const blocks: ICgEventLogicBlock[] = [];
-		for (const entry of parsed) {
-			if (!isRecord(entry)) {
-				return { error: translation.validation.invalidJson.getTrans() };
-			}
-			const type = typeof entry.type === 'string' ? entry.type.trim() : '';
-			if (!type) {
-				return { error: translation.validation.invalidJson.getTrans() };
-			}
-
-			const rawData = entry.data;
-			if (rawData === undefined) {
-				blocks.push({ type });
-				continue;
-			}
-			if (!isRecord(rawData)) {
-				return { error: translation.validation.invalidJson.getTrans() };
-			}
-			blocks.push({ type, data: rawData });
-		}
-
-		return { blocks };
+		const blocks = normalizeLogicBlockList(parsed);
+		return blocks
+			? { blocks }
+			: { error: translation.validation.invalidJson.getTrans() };
 	} catch (err) {
 		return { error: err instanceof Error ? err.message : translation.validation.invalidJson.getTrans() };
 	}
@@ -75,14 +46,16 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 	private releaseModalLock: (() => void) | null = null;
 	private formHistory: FormHistory<LogicListJsonDraft>;
 	private containerRef = React.createRef<HTMLDivElement>();
+	private jsonEditorRef = React.createRef<MonacoEditorComponent>();
+	private initialBlocksSnapshot: ICgEventLogicBlock[];
 
 	constructor(props: LogicListJsonPanelProps) {
 		super(props);
-		const initialBlocks = cloneBlocks(editor.getLogicBlocks(props.eventId, props.blockType));
+		const initialBlocks = cloneDraftSnapshot(editor.getLogicBlocks(props.eventId, props.blockType));
 		const jsonText = JSON.stringify(initialBlocks, null, 2);
-		this.formHistory = new FormHistory({ draftBlocks: initialBlocks, jsonText }, this.forceUpdate.bind(this));
+		this.initialBlocksSnapshot = cloneDraftSnapshot(initialBlocks);
+		this.formHistory = new FormHistory({ jsonText }, this.forceUpdate.bind(this));
 		this.state = {
-			draftBlocks: initialBlocks,
 			jsonText,
 			jsonError: undefined,
 		};
@@ -90,7 +63,7 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 
 	componentDidMount(): void {
 		this.releaseModalLock = acquireModalLock();
-		winEE.on('keydown', this.handleKeyDown, this);
+		winEE.on('keydown', this.handleKeyDown);
 	}
 
 	componentDidUpdate(prevProps: LogicListJsonPanelProps): void {
@@ -98,27 +71,37 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 			return;
 		}
 
-		const nextBlocks = cloneBlocks(editor.getLogicBlocks(this.props.eventId, this.props.blockType));
+		const nextBlocks = cloneDraftSnapshot(editor.getLogicBlocks(this.props.eventId, this.props.blockType));
 		const jsonText = JSON.stringify(nextBlocks, null, 2);
-		this.formHistory.reset({ draftBlocks: nextBlocks, jsonText });
-		this.setState({ draftBlocks: nextBlocks, jsonText, jsonError: undefined });
+		this.initialBlocksSnapshot = cloneDraftSnapshot(nextBlocks);
+		this.formHistory.reset({ jsonText });
+		this.setState({ jsonText, jsonError: undefined });
 	}
 
 	componentWillUnmount(): void {
-		winEE.off('keydown', this.handleKeyDown, this);
+		winEE.off('keydown', this.handleKeyDown);
 		this.releaseModalLock?.();
 		this.releaseModalLock = null;
 	}
 
-	private handleKeyDown(event: KeyboardEvent) {
+	private handleKeyDown = (event: KeyboardEvent) => {
 		handleUndoRedoShortcuts(event, this.containerRef.current, this.handleUndo, this.handleRedo);
+	};
+
+	private getLiveJsonText(): string {
+		return this.jsonEditorRef.current?.getValue() ?? this.state.jsonText;
 	}
 
-	private commitDraft = (_text?: string) => {
-		if (this.state.jsonError) {
+	private commitDraft = (text?: string) => {
+		const jsonText = text ?? this.getLiveJsonText();
+		const parsed = parseBlocks(jsonText);
+		if (parsed.error) {
 			return;
 		}
-		this.formHistory.push({ draftBlocks: this.state.draftBlocks, jsonText: this.state.jsonText });
+		this.formHistory.push({ jsonText });
+		if (jsonText !== this.state.jsonText) {
+			this.setState({ jsonText, jsonError: undefined });
+		}
 	};
 
 	private handleUndo = () => {
@@ -128,7 +111,6 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 			return;
 		}
 		this.setState({
-			draftBlocks: snapshot.draftBlocks,
 			jsonText: snapshot.jsonText,
 			jsonError: undefined,
 		});
@@ -141,7 +123,6 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 			return;
 		}
 		this.setState({
-			draftBlocks: snapshot.draftBlocks,
 			jsonText: snapshot.jsonText,
 			jsonError: undefined,
 		});
@@ -156,17 +137,26 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 		this.setState({
 			jsonText: text,
 			jsonError: undefined,
-			draftBlocks: parsed.blocks ?? [],
 		});
 	};
 
 	private handleSave = () => {
-		if (this.state.jsonError) {
+		const jsonText = this.getLiveJsonText();
+		const parsed = parseBlocks(jsonText);
+		if (parsed.error) {
+			this.setState({ jsonText, jsonError: parsed.error });
 			return;
 		}
-		this.commitDraft();
+		const draftBlocks = parsed.blocks ?? [];
+		const currentBlocks = editor.getLogicBlocks(this.props.eventId, this.props.blockType);
+		if (!isLogicListSnapshotCurrent(this.initialBlocksSnapshot, currentBlocks)) {
+			this.setState({ jsonText, jsonError: translation.validation.dataChanged.getTrans() });
+			return;
+		}
+		this.formHistory.push({ jsonText });
 		const blockKey = ebtConv.COMPLEX[this.props.blockType];
-		editor.updateEvent(this.props.eventId, { [blockKey]: this.state.draftBlocks });
+		editor.updateEvent(this.props.eventId, { [blockKey]: draftBlocks });
+		selectionStateManager.clearSection(this.props.blockType);
 		this.props.onClose();
 	};
 
@@ -207,6 +197,7 @@ export class LogicListJsonPanel extends React.PureComponent<LogicListJsonPanelPr
 							</div>
 							<div className="modal-body cgenh-modal-body cgenh-modal-body--no-scroll cgenh-modal-body--flush flex-grow-1 d-flex flex-column">
 								<MonacoEditorComponent
+									ref={this.jsonEditorRef}
 									className="flex-grow-1"
 									value={this.state.jsonText}
 									error={this.state.jsonError}

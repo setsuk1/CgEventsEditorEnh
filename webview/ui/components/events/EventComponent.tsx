@@ -2,19 +2,40 @@ import { ICgEvent } from '@shared';
 import eventSchemaJson from '@media/json/event.enheditor.schema.json';
 import React from 'react';
 import { createPortal } from 'react-dom';
-import type { EditorChangeEventPayload } from '../../../editor/CgEventsEditor';
+import type { EditorChangeEventPayload, EditorChangeEventType } from '../../../editor/CgEventsEditor';
+import { createDefaultEvent } from '../../../editor/EventDefaults';
 import { editor, EditorChangeEvents } from '../../../editor/CgEventsEditor';
 import { EventBlockType } from '../../../editor/eventBlockTypes';
 import { translation } from '../../../trans/Trans';
 import { RJSFConfigsPanel } from '../../rjsf/RJSFConfigsPanel';
 import { isRecord } from '../../rjsf/utils/rjsfUtils';
-import { EVENT_FOLDER_REGEX, EVENT_NAME_REGEX } from '../../utils/validators';
+import { acquireModalLock } from '../../utils/modalLock';
+import { cloneDraftSnapshot, isDraftSnapshotCurrent } from '../../utils/draftSnapshot';
 import { EventCardHeader } from './EventCardHeader';
+import { getEventIdentityValidationMessage, validateEventFolder, validateEventId } from './EventIdentityValidation';
+import { buildEventMetaEditorData, buildEventPatchFromMeta } from './EventMetaData';
 import { eventCardUiStateStore } from './EventCardUiStateStore';
 import { EventLogicSections } from './EventLogicSections';
 import { LogicItemsList } from './LogicItemsList';
 import { LogicListJsonPanel } from './LogicListJsonPanel';
 import { LogicLibraryPanel } from './LogicLibraryPanel';
+import { getOwnLogicSchemaSectionEntry } from './LogicSchemaEntry';
+
+const EVENT_CONTENT_CHANGE_EVENTS: readonly EditorChangeEventType[] = [
+	EditorChangeEvents.EVENT_UPDATED,
+	EditorChangeEvents.TRIGGER_ADDED,
+	EditorChangeEvents.TRIGGER_UPDATED,
+	EditorChangeEvents.TRIGGER_REMOVED,
+	EditorChangeEvents.TRIGGER_MOVED,
+	EditorChangeEvents.CHECK_ADDED,
+	EditorChangeEvents.CHECK_UPDATED,
+	EditorChangeEvents.CHECK_REMOVED,
+	EditorChangeEvents.CHECK_MOVED,
+	EditorChangeEvents.ACTION_ADDED,
+	EditorChangeEvents.ACTION_UPDATED,
+	EditorChangeEvents.ACTION_REMOVED,
+	EditorChangeEvents.ACTION_MOVED,
+];
 
 interface EventComponentProps {
 	eventId: string;
@@ -35,82 +56,20 @@ interface EventComponentState {
 	schemaVersion: number;
 }
 
-function buildEventMetaEditorData(event: ICgEvent): Record<string, any> {
-	const meta: Record<string, any> = {};
-	for (const [key, value] of Object.entries(event ?? {})) {
-		if (key === 'actions' || key === 'checks' || key === 'triggers') {
-			continue;
-		}
-		meta[key] = value;
-	}
-
-	const referenceOnly = meta['referenceOnly'];
-	if (typeof referenceOnly === 'boolean') {
-		meta['referenceOnly'] = referenceOnly ? 1 : 0;
-	}
-
-	return meta;
-}
-
-function buildEventPatchFromMeta(meta: Record<string, any>): Partial<ICgEvent> {
-	const patch: Partial<ICgEvent> = {};
-	for (const [key, value] of Object.entries(meta)) {
-		if (key === 'actions' || key === 'checks' || key === 'triggers') {
-			continue;
-		}
-
-		if (key === 'id') {
-			if (typeof value === 'string') {
-				patch.id = value.trim();
-			}
-			continue;
-		}
-
-		if (key === 'folder') {
-			patch.folder = typeof value === 'string' ? value.trim() : '';
-			continue;
-		}
-
-		if (key === 'referenceOnly') {
-			patch.referenceOnly = value === 1 || value === true;
-			continue;
-		}
-
-		if (key === 'disabled') {
-			patch.disabled = !!value;
-			continue;
-		}
-
-		if (key === 'devOnly') {
-			patch.devOnly = !!value;
-			continue;
-		}
-
-		patch[key] = value;
-	}
-
-	return patch;
-}
-
 function validateEventMetaEditorData(editingEventId: string, meta: any): string | undefined {
-	const nextId = typeof meta?.id === 'string' ? meta.id.trim() : '';
-	if (!nextId) {
-		return translation.events.eventNameRequired.getTrans();
-	}
-	if (!EVENT_NAME_REGEX.test(nextId)) {
-		return translation.events.eventNameInvalid.getTrans();
-	}
-	const collision = editor.getEvents().some((evt) => evt.id === nextId && evt.id !== editingEventId);
-	if (collision) {
-		return translation.events.eventNameExists.getTrans();
+	const idValidation = validateEventId(
+		meta?.id,
+		editingEventId,
+		(eventId) => Boolean(editor.getEventById(eventId)),
+	);
+	if (idValidation.error) {
+		return getEventIdentityValidationMessage(idValidation.error);
 	}
 
-	const folder = typeof meta?.folder === 'string' ? meta.folder.trim() : '';
-	if (!EVENT_FOLDER_REGEX.test(folder)) {
-		return translation.events.folderNameInvalid.getTrans();
-	}
-
-	return undefined;
+	const folderValidation = validateEventFolder(meta?.folder);
+	return folderValidation.error
+		? getEventIdentityValidationMessage(folderValidation.error)
+		: undefined;
 }
 
 export class EventComponent extends React.Component<EventComponentProps, EventComponentState> {
@@ -121,6 +80,8 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 		action: React.createRef<LogicItemsList>(),
 	};
 	private editorListenersAttached = false;
+	private releaseMetaModalLock: (() => void) | null = null;
+	private metaInitialSnapshot?: Record<string, any>;
 
 	constructor(props: EventComponentProps) {
 		super(props);
@@ -139,7 +100,6 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 		};
 	}
 
-	// Public method to be called by parent for collapse all/expand all
 	public setCollapsed(collapsed: boolean) {
 		this.setState({ collapsed }, () => {
 			eventCardUiStateStore.setCollapsed(this.props.eventId, collapsed);
@@ -148,7 +108,6 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 	}
 
 	private updateCollapseDOM(collapsed = this.state.collapsed) {
-		// Directly manipulate DOM to avoid re-render
 		if (this.cardRef.current) {
 			this.cardRef.current.classList.toggle('cgenh-event-card--collapsed', collapsed);
 		}
@@ -159,34 +118,15 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 		if (event) {
 			return event;
 		}
-		return {
-			id: eventId,
-			folder: '',
-			disabled: false,
-			startTime: 0,
-			checkInterval: 10,
-			repeatInterval: 0,
-			repeats: 0,
-			devOnly: false,
-			referenceOnly: false,
-			color: '#ffffff',
-			actions: [],
-			checks: [],
-			triggers: [],
-		};
+		return createDefaultEvent(eventId);
 	}
 
 	shouldComponentUpdate(nextProps: EventComponentProps, nextState: EventComponentState) {
-		// State changes always trigger update (collapsed, collapsed sections, modals)
 		if (this.hasStateChanged(nextState)) return true;
-
-		// Check UI-affecting props
 		if (this.props.eventId !== nextProps.eventId) return true;
 		if (this.props.initialCollapsed !== nextProps.initialCollapsed) return true;
 		if (this.props.isFirst !== nextProps.isFirst) return true;
 		if (this.props.isLast !== nextProps.isLast) return true;
-
-		// No changes detected
 		return false;
 	}
 
@@ -214,50 +154,30 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 	}
 
 	private attachEditorListeners(): void {
-		if (this.editorListenersAttached) {
-			return;
-		}
+		if (this.editorListenersAttached) return;
 		this.editorListenersAttached = true;
-		editor.on(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdated, this);
-		editor.on(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated, this);
-		editor.on(EditorChangeEvents.TRIGGER_ADDED, this.handleTriggerAdded, this);
-		editor.on(EditorChangeEvents.TRIGGER_UPDATED, this.handleTriggerUpdated, this);
-		editor.on(EditorChangeEvents.TRIGGER_REMOVED, this.handleTriggerRemoved, this);
-		editor.on(EditorChangeEvents.TRIGGER_MOVED, this.handleTriggerMoved, this);
-		editor.on(EditorChangeEvents.CHECK_ADDED, this.handleCheckAdded, this);
-		editor.on(EditorChangeEvents.CHECK_UPDATED, this.handleCheckUpdated, this);
-		editor.on(EditorChangeEvents.CHECK_REMOVED, this.handleCheckRemoved, this);
-		editor.on(EditorChangeEvents.CHECK_MOVED, this.handleCheckMoved, this);
-		editor.on(EditorChangeEvents.ACTION_ADDED, this.handleActionAdded, this);
-		editor.on(EditorChangeEvents.ACTION_UPDATED, this.handleActionUpdated, this);
-		editor.on(EditorChangeEvents.ACTION_REMOVED, this.handleActionRemoved, this);
-		editor.on(EditorChangeEvents.ACTION_MOVED, this.handleActionMoved, this);
+		editor.on(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdated);
+		editor.on(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated);
+		for (const eventType of EVENT_CONTENT_CHANGE_EVENTS) {
+			editor.on(eventType, this.handleEventContentChange);
+		}
 	}
 
 	private detachEditorListeners(): void {
-		if (!this.editorListenersAttached) {
-			return;
-		}
+		if (!this.editorListenersAttached) return;
 		this.editorListenersAttached = false;
-		editor.off(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdated, this);
-		editor.off(EditorChangeEvents.EVENT_UPDATED, this.handleEventUpdated, this);
-		editor.off(EditorChangeEvents.TRIGGER_ADDED, this.handleTriggerAdded, this);
-		editor.off(EditorChangeEvents.TRIGGER_UPDATED, this.handleTriggerUpdated, this);
-		editor.off(EditorChangeEvents.TRIGGER_REMOVED, this.handleTriggerRemoved, this);
-		editor.off(EditorChangeEvents.TRIGGER_MOVED, this.handleTriggerMoved, this);
-		editor.off(EditorChangeEvents.CHECK_ADDED, this.handleCheckAdded, this);
-		editor.off(EditorChangeEvents.CHECK_UPDATED, this.handleCheckUpdated, this);
-		editor.off(EditorChangeEvents.CHECK_REMOVED, this.handleCheckRemoved, this);
-		editor.off(EditorChangeEvents.CHECK_MOVED, this.handleCheckMoved, this);
-		editor.off(EditorChangeEvents.ACTION_ADDED, this.handleActionAdded, this);
-		editor.off(EditorChangeEvents.ACTION_UPDATED, this.handleActionUpdated, this);
-		editor.off(EditorChangeEvents.ACTION_REMOVED, this.handleActionRemoved, this);
-		editor.off(EditorChangeEvents.ACTION_MOVED, this.handleActionMoved, this);
+		editor.off(EditorChangeEvents.SCHEMA_UPDATED, this.handleSchemaUpdated);
+		editor.off(EditorChangeEvents.DOCUMENT_UPDATED, this.handleDocumentUpdated);
+		for (const eventType of EVENT_CONTENT_CHANGE_EVENTS) {
+			editor.off(eventType, this.handleEventContentChange);
+		}
 	}
 
 	componentDidUpdate(prevProps: EventComponentProps) {
-		// Only reset collapsed/meta when switching to a different event card.
 		if (prevProps.eventId !== this.props.eventId) {
+			this.releaseMetaModalLock?.();
+			this.releaseMetaModalLock = null;
+			this.metaInitialSnapshot = undefined;
 			const savedUiState = eventCardUiStateStore.get(this.props.eventId);
 			const nextCollapsed = savedUiState ? savedUiState.collapsed : (this.props.initialCollapsed ?? false);
 			eventCardUiStateStore.setCollapsed(this.props.eventId, nextCollapsed);
@@ -275,9 +195,7 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 					addType: undefined,
 					addInsertIndex: undefined,
 				},
-				() => {
-					this.updateCollapseDOM(nextCollapsed);
-				}
+				() => this.updateCollapseDOM(nextCollapsed)
 			);
 			return;
 		}
@@ -292,71 +210,35 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 
 	componentWillUnmount(): void {
 		this.detachEditorListeners();
+		this.releaseMetaModalLock?.();
+		this.releaseMetaModalLock = null;
 	}
 
 	private handleSchemaUpdated = () => {
-		this.setState((prev) => ({ schemaVersion: prev.schemaVersion + 1 }));
+		const schema = editor.getSchema();
+		this.setState((prev) => {
+			const addEntry = prev.addBlockType && prev.addType
+				? getOwnLogicSchemaSectionEntry(schema, prev.addBlockType, prev.addType)
+				: undefined;
+			const addTypeUnavailable = Boolean(prev.addBlockType && prev.addType)
+				&& (!addEntry || addEntry.deprecated === true);
+			return {
+				schemaVersion: prev.schemaVersion + 1,
+				addType: addTypeUnavailable ? undefined : prev.addType,
+			};
+		});
+	};
+
+	private handleDocumentUpdated = () => {
+		if (editor.getEventById(this.props.eventId)) this.forceUpdate();
 	};
 
 	private refreshForEventChange(payload?: EditorChangeEventPayload) {
-		if (!payload?.eventId) {
-			return;
-		}
-		if (payload.eventId !== this.props.eventId) {
-			return;
-		}
+		if (!payload?.eventId || payload.eventId !== this.props.eventId) return;
 		this.forceUpdate();
 	}
 
-	private handleEventUpdated = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleTriggerAdded = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleTriggerUpdated = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleTriggerRemoved = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleTriggerMoved = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleCheckAdded = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleCheckUpdated = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleCheckRemoved = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleCheckMoved = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleActionAdded = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleActionUpdated = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleActionRemoved = (payload?: EditorChangeEventPayload) => {
-		this.refreshForEventChange(payload);
-	};
-
-	private handleActionMoved = (payload?: EditorChangeEventPayload) => {
+	private handleEventContentChange = (payload?: EditorChangeEventPayload) => {
 		this.refreshForEventChange(payload);
 	};
 
@@ -364,14 +246,21 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 		this.setState((prev) => {
 			const nextCollapsed = !prev.blockCollapsed[section];
 			eventCardUiStateStore.setBlockCollapsed(this.props.eventId, section, nextCollapsed);
-			return {
-				blockCollapsed: { ...prev.blockCollapsed, [section]: nextCollapsed },
-			};
+			return { blockCollapsed: { ...prev.blockCollapsed, [section]: nextCollapsed } };
 		});
 	};
 
-	private openMeta = () => this.setState({ metaOpen: true });
-	private closeMeta = () => this.setState({ metaOpen: false });
+	private openMeta = () => {
+		this.metaInitialSnapshot = cloneDraftSnapshot(buildEventMetaEditorData(this.readEvent(this.props.eventId)));
+		this.releaseMetaModalLock = this.releaseMetaModalLock ?? acquireModalLock();
+		this.setState({ metaOpen: true });
+	};
+	private closeMeta = () => {
+		this.releaseMetaModalLock?.();
+		this.releaseMetaModalLock = null;
+		this.metaInitialSnapshot = undefined;
+		this.setState({ metaOpen: false });
+	};
 	private openAdd = (blockType: EventBlockType, insertIndex?: number) =>
 		this.setState({ addBlockType: blockType, addType: undefined, addInsertIndex: insertIndex });
 	private closeAdd = () => this.setState({ addBlockType: undefined, addType: undefined, addInsertIndex: undefined });
@@ -402,14 +291,12 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 					title={translation.logic.add[addSection].getTrans()}
 					blockType={addSection}
 					schemaVersion={schemaVersion}
-					onSelect={(type) => {
-						this.setState({ addType: type });
-					}}
+					onSelect={(type) => this.setState({ addType: type })}
 					onClose={this.closeAdd}
 				/>,
 				document.body
 			)
-				: null;
+			: null;
 
 		const editListPanel = this.state.jsonEditBlockType
 			? createPortal(
@@ -430,9 +317,7 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 							className="modal show d-block"
 							role="dialog"
 							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeAdd();
-								}
+								if (e.target === e.currentTarget) this.closeAdd();
 							}}
 						>
 							<div
@@ -508,9 +393,7 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 							className="modal show d-block"
 							role="dialog"
 							onMouseDown={(e) => {
-								if (e.target === e.currentTarget) {
-									this.closeMeta();
-								}
+								if (e.target === e.currentTarget) this.closeMeta();
 							}}
 						>
 							<div
@@ -529,8 +412,11 @@ export class EventComponent extends React.Component<EventComponentProps, EventCo
 									onUpdate={(patch) => {
 										const configs = isRecord(patch?.configs) ? patch.configs : undefined;
 										const meta = configs ? configs['Event'] : undefined;
-										if (!isRecord(meta)) {
-											return;
+										if (!isRecord(meta)) return;
+										const currentEvent = editor.getEventById(this.props.eventId);
+										const currentMeta = currentEvent ? buildEventMetaEditorData(currentEvent) : undefined;
+										if (!this.metaInitialSnapshot || !currentMeta || !isDraftSnapshotCurrent(this.metaInitialSnapshot, currentMeta)) {
+											throw new Error(translation.validation.dataChanged.getTrans());
 										}
 										editor.updateEvent(this.props.eventId, buildEventPatchFromMeta(meta));
 									}}

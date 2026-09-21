@@ -1,9 +1,23 @@
 import { RJSFSchema, UiSchema } from '@rjsf/utils';
-import { ICgEventsSchema, ICgEventsSchemaEntry, ICgEventsSchemaProperty, parseSchemaDefault, translateSchema } from '@shared';
+import { ICgEventsSchema, ICgEventsSchemaEntry, ICgEventsSchemaProperty, translateSchema } from '@shared';
 import { JSONSchema7TypeName } from 'json-schema';
-import { getResponsiveGridClasses } from '../helpers/gridHelper';
 import { dedupeSchemaProperties } from '../helpers/schemaPropertyHelper';
+import { createSafeRecord } from '../utils/safeRecord';
+import {
+	convertSchemaPropertyType,
+	getEffectiveDefaultValue,
+	getLocalizedFromProp,
+	getLocalizedText,
+	resolveDefinitionName,
+	normalizeSchemaFormat,
+	resolveExplicitArrayItemPolicy,
+} from './schemaConverterValues';
+import { resolveSchemaGridLayout } from './schemaConverterLayout';
 import { isHelperFormat, isRecord } from './utils/rjsfUtils';
+
+function isStaticUiSchema(value: unknown): value is UiSchema {
+	return isRecord(value);
+}
 
 export interface ConvertedSchema {
 	schema: RJSFSchema;
@@ -12,239 +26,27 @@ export interface ConvertedSchema {
 
 export interface SchemaConverterOptions {
 	rootSchema?: ICgEventsSchema;
-	defCache?: Map<string, RJSFSchema>;
 	processing?: Set<string>;
 	useGridLayout?: boolean;
 }
 
-/**
- * Get localized text from a Record<string, string> object
- */
-function getLocalizedText(
-	obj: Record<string, string> | string | undefined
-): string | undefined {
-	if (typeof obj === 'string') {
-		return obj;
-	}
-	if (!obj || typeof obj !== 'object') {
-		return undefined;
-	}
 
-	const pick = (val: unknown) => val?.toString();
-	const byLanguage = translateSchema(obj);
-	if (byLanguage !== undefined) {
-		return pick(byLanguage);
-	}
-	const first = Object.values(obj).find((v) => pick(v) !== undefined);
-	return first;
-}
-
-/**
- * Try a list of property keys on the given object and return the first localized text found
- */
-function getLocalizedFromProp(
-	obj: any,
-	keys: Array<string>
-): string | undefined {
-	for (const key of keys) {
-		const value = obj ? obj[key] : undefined;
-		const localized = getLocalizedText(value);
-		if (localized !== undefined) {
-			return localized;
-		}
-	}
-	return undefined;
-}
-
-function hasLocaleKeys(obj: Record<string, any>): boolean {
-	return Object.prototype.hasOwnProperty.call(obj, 'en') || Object.prototype.hasOwnProperty.call(obj, 'zh');
-}
-
-function resolveLocalizedValue(value: Record<string, any>): any {
-	const translated = translateSchema(value);
-	if (translated !== undefined) {
-		return translated;
-	}
-	return Object.values(value).find((v) => v !== undefined);
-}
-
-function getEffectiveDefaultValue(prop: ICgEventsSchemaProperty, schemaType: JSONSchema7TypeName): any {
-	const defaultVal = prop.default;
-	if (!isRecord(defaultVal)) {
-		return undefined;
-	}
-
-	const resolvedDefault = hasLocaleKeys(defaultVal) ? resolveLocalizedValue(defaultVal) : defaultVal;
-	if (resolvedDefault === undefined) {
-		return undefined;
-	}
-
-	const formatRaw = typeof prop.format === 'string' ? prop.format.trim().toLowerCase() : '';
-	const skipParseDefault = schemaType === 'string' || formatRaw === 'string';
-	if (skipParseDefault) {
-		if (typeof resolvedDefault === 'string') {
-			return resolvedDefault;
-		}
-		try {
-			return JSON.stringify(resolvedDefault);
-		} catch {
-			return String(resolvedDefault);
-		}
-	}
-
-	if (typeof resolvedDefault === 'string') {
-		return parseSchemaDefault(resolvedDefault);
-	}
-
-	return resolvedDefault;
-}
-
-/**
- * Normalize a definition reference key
- */
-function normalizeDefinitionKey(rawValue: unknown, allowBare = false): string | null {
-	if (typeof rawValue !== 'string') {
-		return null;
-	}
-
-	const trimmed = rawValue.trim();
-	if (!trimmed) {
-		return null;
-	}
-
-	if (trimmed.startsWith('#/definitions/')) {
-		return trimmed.slice('#/definitions/'.length);
-	}
-
-	if (trimmed.startsWith('#') || trimmed.startsWith('@')) {
-		return trimmed.slice(1);
-	}
-
-	if (allowBare) {
-		return trimmed;
-	}
-
-	return null;
-}
-
-/**
- * Check if a property references a definition
- */
-function resolveDefinitionName(prop: ICgEventsSchemaProperty): string | null {
-	// Check definition field
-	const direct = normalizeDefinitionKey(prop.definition, true);
-	if (direct) {
-		return direct;
-	}
-
-	// Check type field for definition references
-	const fromType = normalizeDefinitionKey(prop.type, false);
-	if (fromType) {
-		return fromType;
-	}
-
-	// For arrays, check arrayItem and items
-	if (prop.type === 'array' || prop.arrayItem || prop.items) {
-		const fromArrayItem = normalizeDefinitionKey(prop.arrayItem, false);
-		if (fromArrayItem) {
-			return fromArrayItem;
-		}
-
-		if (prop.items && typeof prop.items === 'object') {
-			const fromItemDef = normalizeDefinitionKey(prop.items.definition, true);
-			if (fromItemDef) {
-				return fromItemDef;
-			}
-
-			const fromItemType = normalizeDefinitionKey(prop.items.type, false);
-			if (fromItemType) {
-				return fromItemType;
-			}
-		}
-	}
-
-	return null;
+function getOwnSchemaEntry(
+	category: Record<string, ICgEventsSchemaEntry> | undefined,
+	key: string,
+): ICgEventsSchemaEntry | undefined {
+	if (!category || !Object.hasOwn(category, key)) return undefined;
+	return category[key];
 }
 
 function getDefinitionEntry(rootSchema: ICgEventsSchema | undefined, defName: string): ICgEventsSchemaEntry | undefined {
-	if (!rootSchema || !defName) {
+	if (!rootSchema) {
 		return undefined;
 	}
 
-	return rootSchema.definition?.[defName];
+	return getOwnSchemaEntry(rootSchema.definition, defName);
 }
 
-function getDefinitionSchema(defName: string, options: SchemaConverterOptions): RJSFSchema | undefined {
-	const { rootSchema } = options;
-	if (!defName) {
-		return undefined;
-	}
-
-	options.defCache = options.defCache ?? new Map<string, RJSFSchema>();
-	options.processing = options.processing ?? new Set<string>();
-
-	if (options.defCache.has(defName)) {
-		return options.defCache.get(defName);
-	}
-
-	if (options.processing.has(defName)) {
-		// Prevent recursion loops
-		return { type: 'object', properties: {} };
-	}
-
-	const entry = getDefinitionEntry(rootSchema, defName);
-	if (!entry) {
-		return undefined;
-	}
-
-	options.processing.add(defName);
-	const result = convertSchemaEntry(entry, options).schema;
-	options.processing.delete(defName);
-	options.defCache.set(defName, result);
-	return result;
-}
-
-/**
- * Convert ICgEventsSchemaProperty type to JSON Schema type
- */
-function convertType(prop: ICgEventsSchemaProperty): JSONSchema7TypeName {
-	const rawFormat = typeof prop.format === 'string' ? prop.format.trim() : '';
-	if (rawFormat && rawFormat !== 'CgEditorLayout' && !rawFormat.includes(':')) {
-		const format = rawFormat.toLowerCase();
-		if (format === 'string') { return 'string'; }
-		if (format === 'number') { return 'number'; }
-		if (format === 'integer' || format === 'int') { return 'integer'; }
-		if (format === 'boolean') { return 'boolean'; }
-		if (format === 'object' || format === 'json') { return 'object'; }
-		if (format === 'array') { return 'array'; }
-		if (format === 'color') { return 'string'; }
-	}
-
-	const type = prop.type;
-	if (!type) {
-		return 'string';
-	}
-
-	switch (type) {
-		case 'number':
-			return 'number';
-		case 'boolean':
-			return 'boolean';
-		case 'string':
-		case 'color':
-			return 'string';
-		case 'object':
-			return 'object';
-		case 'array':
-			return 'array';
-		default:
-			// Check if it's a definition reference
-			if (typeof type === 'string' && (type.startsWith('#') || type.startsWith('@'))) {
-				return 'object';
-			}
-			return 'string';
-	}
-}
 
 /**
  * Convert a single ICgEventsSchemaProperty to JSON Schema property
@@ -270,7 +72,7 @@ function convertProperty(
 
 
 	// Handle arrays first (so arrayItem references don't get treated as object $ref)
-	const isArray = prop.type === 'array' || prop.collection === 'array' || prop.multiple || prop.arrayItem || prop.items;
+	const isArray = isArrayProperty(prop);
 	if (isArray) {
 		jsonSchema.type = 'array';
 		const uniqueItems = !!prop.uniqueItems;
@@ -283,37 +85,19 @@ function convertProperty(
 		const itemDefName = resolveDefinitionName(prop);
 
 		if (itemDefName) {
-			if (rootSchema?.definition?.[itemDefName]) {
-				itemSchema = { $ref: `#/definitions/${itemDefName}` };
-			} else {
-				const defSchema = getDefinitionSchema(itemDefName, options);
-				if (defSchema) {
-					itemSchema = defSchema;
-				} else {
-					itemSchema = { type: 'object', properties: {} };
-				}
-			}
+			itemSchema = getDefinitionEntry(rootSchema, itemDefName)
+				? { $ref: `#/definitions/${itemDefName}` }
+				: { type: 'object', properties: {} };
 		} else if (prop.items && typeof prop.items === 'object') {
 			itemSchema = convertProperty(prop.items, options);
 		} else if (typeof prop.arrayItem === 'string') {
-			const arrayItemType = prop.arrayItem.trim();
-			const normalized = arrayItemType.toLowerCase();
-			if (normalized === 'integer' || normalized === 'int') {
-				itemSchema = { type: 'integer', default: 0 };
-			} else if (normalized === 'string') {
-				itemSchema = { type: 'string', default: '' };
-			} else if (normalized === 'number') {
-				itemSchema = { type: 'number', default: 0 };
-			} else if (normalized === 'boolean') {
-				itemSchema = { type: 'boolean', default: false };
-			} else if (normalized === 'object') {
-				itemSchema = { type: 'object', default: {} };
-			} else if (normalized === 'color') {
-				itemSchema = { type: 'string', default: '#ffffff' };
+			const explicitItem = resolveExplicitArrayItemPolicy(prop.arrayItem);
+			if (explicitItem) {
+				itemSchema = { type: explicitItem.type, default: explicitItem.defaultValue };
 			}
 		} else if (prop.type) {
 			// For collection/multiple arrays where `type` describes the item type
-			const itemType = convertType(prop);
+			const itemType = convertSchemaPropertyType(prop);
 			if (itemType) {
 				itemSchema = { type: itemType };
 				// Set default value based on type
@@ -347,7 +131,7 @@ function convertProperty(
 
 		const itemFormat = typeof prop.format === 'string' ? prop.format.trim() : '';
 		if (itemFormat && !itemSchema.format) {
-			const normalizedFormat = itemFormat.toLowerCase();
+			const normalizedFormat = normalizeSchemaFormat(itemFormat);
 			if (normalizedFormat !== 'checkbox' && normalizedFormat !== 'string' && normalizedFormat !== 'textarea') {
 				itemSchema.format = itemFormat;
 			}
@@ -392,7 +176,7 @@ function convertProperty(
 	}
 
 	// Set type
-	jsonSchema.type = convertType(prop);
+	jsonSchema.type = convertSchemaPropertyType(prop);
 	if (prop.type === 'number' && isRecord(prop.params)) {
 		const minimum = +prop.params.minimum;
 		if (Number.isFinite(minimum)) {
@@ -426,7 +210,7 @@ function convertProperty(
 		if (Array.isArray(jsonSchema.enum) && jsonSchema.enum.length > 0) {
 			jsonSchema.default = jsonSchema.enum[0];
 		} else {
-			const formatRaw = typeof prop.format === 'string' ? prop.format.trim().toLowerCase() : '';
+			const formatRaw = normalizeSchemaFormat(prop.format);
 			const typeRaw = typeof prop.type === 'string' ? prop.type.trim().toLowerCase() : '';
 			const isNumberString = formatRaw === 'string' && (typeRaw === 'number' || typeRaw === 'integer');
 			if (isNumberString) {
@@ -462,7 +246,7 @@ function convertProperty(
 	// Handle format
 	if (prop.format) {
 		const rawFormat = typeof prop.format === 'string' ? prop.format.trim() : '';
-		const normalizedFormat = rawFormat.toLowerCase();
+		const normalizedFormat = normalizeSchemaFormat(rawFormat);
 		// Don't override color format or apply UI-only formats.
 		if (normalizedFormat && normalizedFormat !== 'color' && normalizedFormat !== 'string' && normalizedFormat !== 'textarea' && !jsonSchema.format) {
 			jsonSchema.format = rawFormat;
@@ -481,13 +265,13 @@ function convertPropertyUiSchema(
 ): UiSchema {
 	const { rootSchema, processing = new Set<string>() } = options;
 	const useGridLayout = options.useGridLayout === true;
-	const format = typeof prop.format === 'string' ? prop.format.trim().toLowerCase() : '';
+	const format = normalizeSchemaFormat(prop.format);
 	const hasEnum = Array.isArray(prop.enum) && prop.enum.length > 0;
-	const isArray = prop.type === 'array' || prop.collection === 'array' || prop.multiple || prop.arrayItem || prop.items;
+	const isArray = isArrayProperty(prop);
 	const resolvedDefName = resolveDefinitionName(prop);
 	const isDefinitionArray = isArray && resolvedDefName !== null;
 	const wantsCheckboxList = isArray && (format === 'checkbox' || (!!prop.uniqueItems && hasEnum));
-	const resolvedType = convertType(prop);
+	const resolvedType = convertSchemaPropertyType(prop);
 	let defUiSchema: UiSchema | undefined;
 	let defGridOptions: string[] | undefined;
 	let arrayItemDefGridOptions: string[] | undefined;
@@ -703,42 +487,30 @@ function convertPropertyUiSchema(
 		}
 	}
 
-	// Handle grid layout using Bootstrap col classes
-	// Default to full width if not specified
-	const gridColumns = useGridLayout ? prop.gridColumns : undefined;
-	const colSize = Number.isFinite(gridColumns) && Number(gridColumns) > 0
-		? Math.min(12, Math.max(1, Number(gridColumns)))
-		: 12;
+	const gridLayout = resolveSchemaGridLayout({
+		useGridLayout,
+		gridColumns: prop.gridColumns,
+		gridOptions: prop.gridOptions,
+		inheritedGridOptions: defGridOptions,
+		inheritedHasSingleField: defHasSingleField,
+	});
 	uiSchema['ui:options'] = {
 		...(uiSchema['ui:options'] || {}),
-		colClass: getResponsiveGridClasses(colSize),
+		colClass: gridLayout.colClass,
 	};
 
-	// Handle grid options
-	const hasOneRow = (prop.gridOptions?.includes('oneRow') || defGridOptions?.includes('oneRow') || defHasSingleField) === true;
-	const hasFullWidth = (prop.gridOptions?.includes('fullwidth') || defGridOptions?.includes('fullwidth')) === true;
-	const hasNoHeader = (prop.gridOptions?.includes('noHeader') || defGridOptions?.includes('noHeader')) === true;
-	const enableGridOptions = useGridLayout;
-	const effectiveOneRow = enableGridOptions && hasOneRow;
-	const effectiveFullWidth = enableGridOptions && hasFullWidth;
-	const effectiveNoHeader = enableGridOptions && hasNoHeader;
-
 	const classNames: string[] = [];
-	if (effectiveOneRow) {
+	if (gridLayout.oneRow) {
 		classNames.push('cgenh-config-field--inline');
 		uiSchema['ui:options'] = {
 			...(uiSchema['ui:options'] || {}),
 			oneRow: true,
 		};
 	}
-	if (effectiveFullWidth) {
+	if (gridLayout.fullWidth) {
 		classNames.push('cgenh-config-field--fullwidth');
-		uiSchema['ui:options'] = {
-			...(uiSchema['ui:options'] || {}),
-			colClass: getResponsiveGridClasses(12),
-		};
 	}
-	if (effectiveNoHeader) {
+	if (gridLayout.noHeader) {
 		uiSchema['ui:options'] = {
 			...(uiSchema['ui:options'] || {}),
 			noHeader: true,
@@ -750,27 +522,32 @@ function convertPropertyUiSchema(
 	}
 
 	// Definition arrays: apply the definition's own gridOptions to each item.
-	const defArrayItemHasOneRow = arrayItemDefGridOptions?.includes('oneRow') === true || arrayItemDefHasSingleField;
-	const defArrayItemHasNoHeader = arrayItemDefGridOptions?.includes('noHeader') === true;
-	const defArrayItemHasFullWidth = arrayItemDefGridOptions?.includes('fullwidth') === true;
+	const definitionArrayGridLayout = resolveSchemaGridLayout({
+		useGridLayout: true,
+		gridOptions: arrayItemDefGridOptions,
+		inheritedHasSingleField: arrayItemDefHasSingleField,
+	});
 
-	if (isDefinitionArray && (defArrayItemHasOneRow || defArrayItemHasNoHeader || defArrayItemHasFullWidth)) {
+	if (
+		isDefinitionArray
+		&& (definitionArrayGridLayout.oneRow || definitionArrayGridLayout.noHeader || definitionArrayGridLayout.fullWidth)
+	) {
 		const rawItems = uiSchema.items;
-		const itemsUiSchema: UiSchema = isRecord(rawItems) ? rawItems : {};
-		if (!isRecord(rawItems)) {
+		const itemsUiSchema: UiSchema = isStaticUiSchema(rawItems) ? rawItems : {};
+		if (!isStaticUiSchema(rawItems)) {
 			uiSchema.items = itemsUiSchema;
 		}
 
 		const rawItemOptions = itemsUiSchema['ui:options'];
 		const itemOptions = isRecord(rawItemOptions) ? rawItemOptions : {};
-		if (defArrayItemHasOneRow) {
+		if (definitionArrayGridLayout.oneRow) {
 			itemOptions.oneRow = true;
 		}
-		if (defArrayItemHasNoHeader) {
+		if (definitionArrayGridLayout.noHeader) {
 			itemOptions.noHeader = true;
 		}
-		if (defArrayItemHasFullWidth) {
-			itemOptions.colClass = getResponsiveGridClasses(12);
+		if (definitionArrayGridLayout.fullWidth) {
+			itemOptions.colClass = definitionArrayGridLayout.colClass;
 		}
 		itemsUiSchema['ui:options'] = itemOptions;
 	}
@@ -792,11 +569,9 @@ function convertPropertyUiSchema(
 	}
 
 	if (prop.collapsed !== undefined) {
-		const collapsed = !!prop.collapsed;
 		uiSchema['ui:options'] = {
 			...(uiSchema['ui:options'] || {}),
-			collapsible: true,
-			collapsed,
+			collapsed: !!prop.collapsed,
 		};
 	}
 
@@ -812,30 +587,17 @@ function convertPropertyUiSchema(
 	if (isArray) {
 		let itemType: JSONSchema7TypeName | undefined;
 		if (prop.items && typeof prop.items === 'object') {
-			itemType = convertType(prop.items);
+			itemType = convertSchemaPropertyType(prop.items);
 		} else if (typeof prop.arrayItem === 'string') {
-			const arrayItemType = prop.arrayItem.trim().toLowerCase();
-			if (arrayItemType === 'string') {
-				itemType = 'string';
-			} else if (arrayItemType === 'number') {
-				itemType = 'number';
-			} else if (arrayItemType === 'integer' || arrayItemType === 'int') {
-				itemType = 'integer';
-			} else if (arrayItemType === 'boolean') {
-				itemType = 'boolean';
-			} else if (arrayItemType === 'object' || arrayItemType === 'json') {
-				itemType = 'object';
-			} else if (arrayItemType === 'array') {
-				itemType = 'array';
-			}
+			itemType = resolveExplicitArrayItemPolicy(prop.arrayItem)?.type;
 		} else if (prop.type && prop.type !== 'array') {
-			itemType = convertType(prop);
+			itemType = convertSchemaPropertyType(prop);
 		}
 
 		if (itemType === 'string') {
 			const rawItemSchema = uiSchema.items;
-			if (!rawItemSchema || isRecord(rawItemSchema)) {
-				const itemUiSchema = isRecord(rawItemSchema) ? rawItemSchema : {};
+			if (!rawItemSchema || isStaticUiSchema(rawItemSchema)) {
+				const itemUiSchema: UiSchema = isStaticUiSchema(rawItemSchema) ? rawItemSchema : {};
 				const rawItemOptions = itemUiSchema['ui:options'];
 				const itemOptions = isRecord(rawItemOptions) ? rawItemOptions : {};
 				if (itemOptions.emptyValue === undefined) {
@@ -850,6 +612,165 @@ function convertPropertyUiSchema(
 	return uiSchema;
 }
 
+
+interface ConvertedPropertyNode {
+	schema: RJSFSchema;
+	uiSchema: UiSchema;
+}
+
+function isArrayProperty(prop: ICgEventsSchemaProperty): boolean {
+	return prop.type === 'array'
+		|| prop.collection === 'array'
+		|| !!prop.multiple
+		|| !!prop.arrayItem
+		|| !!prop.items;
+}
+
+function convertPropertyTree(
+	prop: ICgEventsSchemaProperty,
+	childrenMap: Record<string, ICgEventsSchemaProperty[]>,
+	options: SchemaConverterOptions,
+	containerOptions: SchemaConverterOptions,
+): ConvertedPropertyNode {
+	const children = childrenMap[prop.key];
+	const isRequired = !!prop.required;
+	if (!children || children.length === 0) {
+		const propSchema = convertProperty(prop, options);
+		if (isRequired && propSchema.type === 'string' && propSchema.minLength === undefined) {
+			propSchema.minLength = 1;
+		}
+		return {
+			schema: propSchema,
+			uiSchema: convertPropertyUiSchema(prop, containerOptions),
+		};
+	}
+
+	const parentIsArray = isArrayProperty(prop);
+	const nestedUsesGridLayout = normalizeSchemaFormat(prop.format) === 'grid';
+	const nestedChildOptions: SchemaConverterOptions = {
+		...options,
+		useGridLayout: parentIsArray ? true : nestedUsesGridLayout,
+	};
+	const nestedSchema: RJSFSchema = {
+		type: 'object',
+		properties: createSafeRecord<RJSFSchema>(),
+	};
+	const nestedUiSchema = createSafeRecord<any>() as UiSchema;
+	nestedUiSchema['ui:order'] = [];
+	const nestedRequired: string[] = [];
+
+	for (const child of children) {
+		if (!child?.key) {
+			continue;
+		}
+		if (child.required) {
+			nestedRequired.push(child.key);
+		}
+		const convertedChild = convertPropertyTree(
+			child,
+			childrenMap,
+			options,
+			nestedChildOptions,
+		);
+		nestedSchema.properties![child.key] = convertedChild.schema;
+		nestedUiSchema[child.key] = convertedChild.uiSchema;
+		nestedUiSchema['ui:order'].push(child.key);
+	}
+	if (nestedRequired.length > 0) {
+		nestedSchema.required = nestedRequired;
+	}
+
+	const nestedClassNames: string[] = [];
+	if (nestedUsesGridLayout) {
+		nestedClassNames.push('grid');
+	}
+
+	if (parentIsArray) {
+		if (nestedClassNames.length > 0) {
+			nestedUiSchema['ui:classNames'] = nestedClassNames.join(' ');
+		}
+		const arraySchema = convertProperty(prop, options);
+		arraySchema.type = 'array';
+		arraySchema.items = nestedSchema;
+		const parentUiSchema = convertPropertyUiSchema(prop, containerOptions);
+		parentUiSchema.items = nestedUiSchema;
+		return { schema: arraySchema, uiSchema: parentUiSchema };
+	}
+
+	const hasParentHelper = !!prop.helper || isHelperFormat(prop.format);
+	if (hasParentHelper) {
+		const rawNestedOptions = nestedUiSchema['ui:options'];
+		const nestedOptions = isRecord(rawNestedOptions) ? rawNestedOptions : {};
+		nestedUiSchema['ui:options'] = {
+			...nestedOptions,
+			helper: prop.helper,
+			format: prop.format,
+			editorOptions: prop.editorOptions,
+		};
+	}
+
+	const title = getLocalizedText(prop.label);
+	const description = getLocalizedText(prop.description);
+	if (title) {
+		nestedSchema.title = title;
+	} else if (title === '') {
+		nestedUiSchema['ui:label'] = false;
+	}
+	if (description) {
+		nestedSchema.description = description;
+	}
+
+	const nestedGridLayout = resolveSchemaGridLayout({
+		useGridLayout: containerOptions.useGridLayout === true,
+		gridColumns: prop.gridColumns,
+		gridOptions: prop.gridOptions,
+	});
+	nestedUiSchema['ui:options'] = {
+		...(nestedUiSchema['ui:options'] || {}),
+		colClass: nestedGridLayout.colClass,
+	};
+
+	if (nestedGridLayout.fullWidth) {
+		nestedClassNames.push('cgenh-config-field--fullwidth');
+	}
+	if (nestedGridLayout.oneRow) {
+		nestedClassNames.push('cgenh-config-field--inline');
+		nestedUiSchema['ui:options'] = {
+			...(nestedUiSchema['ui:options'] || {}),
+			oneRow: true,
+		};
+	}
+	if (nestedGridLayout.noHeader) {
+		nestedUiSchema['ui:options'] = {
+			...(nestedUiSchema['ui:options'] || {}),
+			noHeader: true,
+		};
+	}
+	if (prop.collapsed !== undefined) {
+		nestedUiSchema['ui:options'] = {
+			...(nestedUiSchema['ui:options'] || {}),
+			collapsed: !!prop.collapsed,
+		};
+	}
+	if (prop.indent && prop.indent > 0) {
+		nestedUiSchema['ui:options'] = {
+			...(nestedUiSchema['ui:options'] || {}),
+			indent: prop.indent,
+		};
+	}
+	if (prop.visible !== undefined) {
+		nestedUiSchema['ui:options'] = {
+			...(nestedUiSchema['ui:options'] || {}),
+			visible: prop.visible,
+		};
+	}
+	if (nestedClassNames.length > 0) {
+		nestedUiSchema['ui:classNames'] = nestedClassNames.join(' ');
+	}
+
+	return { schema: nestedSchema, uiSchema: nestedUiSchema };
+}
+
 /**
  * Convert ICgEventsSchemaEntry to JSON Schema and UI Schema
  */
@@ -859,8 +780,8 @@ export function convertSchemaEntry(
 ): ConvertedSchema {
 	const schema: RJSFSchema = {
 		type: 'object',
-		properties: {},
-		definitions: {},
+		properties: createSafeRecord<RJSFSchema>(),
+		definitions: createSafeRecord<RJSFSchema>(),
 	};
 	const entryTitle = getLocalizedText(entry.label);
 	const entryDescription = getLocalizedText(entry.description);
@@ -872,16 +793,15 @@ export function convertSchemaEntry(
 		schema.description = entryDescription;
 	}
 
-	const uiSchema: UiSchema = {
-		'ui:order': [],
-	};
+	const uiSchema = createSafeRecord<any>() as UiSchema;
+	uiSchema['ui:order'] = [];
 	const required: string[] = [];
 	// If entry title is empty string, hide the label
 	if (entryTitle === '') {
 		uiSchema['ui:label'] = false;
 	}
 
-	const entryUsesGridLayout = typeof entry.format === 'string' && entry.format.trim().toLowerCase() === 'grid';
+	const entryUsesGridLayout = normalizeSchemaFormat(entry.format) === 'grid';
 	const entryOptions: SchemaConverterOptions = {
 		...options,
 		useGridLayout: entryUsesGridLayout,
@@ -890,202 +810,36 @@ export function convertSchemaEntry(
 	const normalizedProperties = dedupeSchemaProperties(entry.properties);
 
 	// Build parent-children relationships
-	const childrenMap: Record<string, ICgEventsSchemaProperty[]> = {};
-	const parentKeys = new Set<string>();
-
+	const childrenMap: Record<string, ICgEventsSchemaProperty[]> = Object.create(null);
 	for (const prop of normalizedProperties) {
-		if (prop && prop.parent) {
-			const parentKey = prop.parent;
-			if (!childrenMap[parentKey]) {
-				childrenMap[parentKey] = [];
-			}
-			childrenMap[parentKey].push(prop);
-			parentKeys.add(parentKey);
+		if (!prop?.parent) {
+			continue;
 		}
+		const parentKey = prop.parent;
+		(childrenMap[parentKey] ??= []).push(prop);
 	}
 
-		// Convert properties
+	// Convert each root property. Child properties are handled recursively.
 	for (const prop of normalizedProperties) {
-		if (!prop || !prop.key) {
+		if (!prop?.key || prop.parent) {
 			continue;
 		}
-
-		// Skip child properties (they'll be nested)
-		if (prop.parent) {
-			continue;
+		if (prop.required) {
+			required.push(prop.key);
 		}
-
-		const key = prop.key;
-		const isRequired = !!prop.required;
-		if (isRequired) {
-			required.push(key);
-		}
-
-		// Check if this property has children (is a parent)
-		if (childrenMap[key]) {
-			const parentIsArray = prop.type === 'array' || prop.collection === 'array' || prop.multiple || prop.arrayItem || prop.items;
-			const nestedUsesGridLayout = typeof prop.format === 'string' && prop.format.trim().toLowerCase() === 'grid';
-			const nestedChildOptions: SchemaConverterOptions = {
-				...options,
-				useGridLayout: parentIsArray ? true : nestedUsesGridLayout,
-			};
-
-			// Create nested object schema for either an object field or the array item schema
-			const nestedSchema: RJSFSchema = {
-				type: 'object',
-				properties: {},
-			};
-			const nestedUiSchema: UiSchema = {
-				'ui:order': [],
-			};
-
-			const nestedRequired: string[] = [];
-			for (const child of childrenMap[key]) {
-				if (!child.key) {
-					continue;
-				}
-
-				const childRequired = !!child.required;
-				if (childRequired) {
-					nestedRequired.push(child.key);
-				}
-				const childSchema = convertProperty(child, options);
-				if (childRequired && childSchema.type === 'string' && childSchema.minLength === undefined) {
-					childSchema.minLength = 1;
-				}
-				nestedSchema.properties![child.key] = childSchema;
-				nestedUiSchema[child.key] = convertPropertyUiSchema(child, nestedChildOptions);
-				nestedUiSchema['ui:order'].push(child.key);
-			}
-			if (nestedRequired.length > 0) {
-				nestedSchema.required = nestedRequired;
-			}
-
-			// Apply grid layout to nested object only if the object itself is marked as grid
-			const nestedClassNames: string[] = [];
-			if (nestedUsesGridLayout) {
-				nestedClassNames.push('grid');
-			}
-
-			if (parentIsArray) {
-				if (nestedClassNames.length > 0) {
-					nestedUiSchema['ui:classNames'] = nestedClassNames.join(' ');
-				}
-
-				const arraySchema = convertProperty(prop, options);
-				arraySchema.type = 'array';
-				arraySchema.items = nestedSchema;
-				schema.properties![key] = arraySchema;
-
-				const parentUiSchema = convertPropertyUiSchema(prop, entryOptions);
-				parentUiSchema.items = nestedUiSchema;
-				uiSchema[key] = parentUiSchema;
-			} else {
-				const hasParentHelper = !!prop.helper || isHelperFormat(prop.format);
-				if (hasParentHelper) {
-					const rawNestedOptions = nestedUiSchema['ui:options'];
-					const nestedOptions = isRecord(rawNestedOptions) ? rawNestedOptions : {};
-					nestedUiSchema['ui:options'] = {
-						...nestedOptions,
-						helper: prop.helper,
-						format: prop.format,
-						editorOptions: prop.editorOptions,
-					};
-				}
-				// Apply title and description from parent
-				const title = getLocalizedText(prop.label);
-				const description = getLocalizedText(prop.description);
-				if (title) {
-					nestedSchema.title = title;
-				} else if (title === '') {
-					// Empty label means intentionally hide the label
-					nestedUiSchema['ui:label'] = false;
-				}
-				if (description) {
-					nestedSchema.description = description;
-				}
-
-				// Apply gridColumns to this object itself only when the parent uses grid layout
-				const parentGridColumns = entryUsesGridLayout ? prop.gridColumns : undefined;
-				const parentColSize = Number.isFinite(parentGridColumns) && Number(parentGridColumns) > 0
-					? Math.min(12, Math.max(1, Number(parentGridColumns)))
-					: 12;
-				nestedUiSchema['ui:options'] = {
-					...(nestedUiSchema['ui:options'] || {}),
-					colClass: getResponsiveGridClasses(parentColSize),
-				};
-
-				// Apply object's gridOptions only when the parent uses grid layout
-				if (entryUsesGridLayout && prop.gridOptions && prop.gridOptions.length > 0) {
-					if (prop.gridOptions.includes('fullwidth')) {
-						nestedClassNames.push('cgenh-config-field--fullwidth');
-					}
-					if (prop.gridOptions.includes('oneRow')) {
-						nestedClassNames.push('cgenh-config-field--inline');
-						nestedUiSchema['ui:options'] = {
-							...(nestedUiSchema['ui:options'] || {}),
-							oneRow: true,
-						};
-					}
-					if (prop.gridOptions.includes('noHeader')) {
-						nestedUiSchema['ui:options'] = {
-							...(nestedUiSchema['ui:options'] || {}),
-							noHeader: true,
-						};
-					}
-				}
-
-				// Apply fullwidth grid column if specified (grid mode only)
-				if (entryUsesGridLayout && prop.gridOptions?.includes('fullwidth')) {
-					nestedUiSchema['ui:options'] = {
-						...(nestedUiSchema['ui:options'] || {}),
-						colClass: getResponsiveGridClasses(12),
-					};
-				}
-				if (prop.collapsed !== undefined) {
-					const collapsed = !!prop.collapsed;
-					nestedUiSchema['ui:options'] = {
-						...(nestedUiSchema['ui:options'] || {}),
-						collapsible: true,
-						collapsed,
-					};
-				}
-
-				// Apply parent's indent/visible to the object container (not only children)
-				if (prop.indent && prop.indent > 0) {
-					nestedUiSchema['ui:options'] = {
-						...(nestedUiSchema['ui:options'] || {}),
-						indent: prop.indent,
-					};
-				}
-				if (prop.visible !== undefined) {
-					nestedUiSchema['ui:options'] = {
-						...(nestedUiSchema['ui:options'] || {}),
-						visible: prop.visible,
-					};
-				}
-
-				if (nestedClassNames.length > 0) {
-					nestedUiSchema['ui:classNames'] = nestedClassNames.join(' ');
-				}
-
-				schema.properties![key] = nestedSchema;
-				uiSchema[key] = nestedUiSchema;
-			}
-		} else {
-			const propSchema = convertProperty(prop, options);
-			if (isRequired && propSchema.type === 'string' && propSchema.minLength === undefined) {
-				propSchema.minLength = 1;
-			}
-			schema.properties![key] = propSchema;
-			uiSchema[key] = convertPropertyUiSchema(prop, entryOptions);
-		}
-
-		uiSchema['ui:order'].push(key);
+		const converted = convertPropertyTree(
+			prop,
+			childrenMap,
+			options,
+			entryOptions,
+		);
+		schema.properties![prop.key] = converted.schema;
+		uiSchema[prop.key] = converted.uiSchema;
+		uiSchema['ui:order'].push(prop.key);
 	}
 
 	// Handle grid format
-	if (entry.format === 'grid') {
+	if (entryUsesGridLayout) {
 		uiSchema['ui:classNames'] = 'cgenh-configs-panel__grid cgenh-configs-panel__grid--12';
 	}
 	if (required.length > 0) {
@@ -1117,28 +871,27 @@ export function convertFullSchema(
 	entryKey: string,
 	entryType: 'action' | 'trigger' | 'check' | 'definition'
 ): ConvertedSchema {
-	const defCache = new Map<string, RJSFSchema>();
 	const processing = new Set<string>();
 	// Get the target entry
 	let entry: ICgEventsSchemaEntry | undefined;
 	switch (entryType) {
 		case 'action':
-			entry = cgSchema.action?.[entryKey];
+			entry = getOwnSchemaEntry(cgSchema.action, entryKey);
 			break;
 		case 'trigger':
-			entry = cgSchema.trigger?.[entryKey];
+			entry = getOwnSchemaEntry(cgSchema.trigger, entryKey);
 			break;
 		case 'check':
-			entry = cgSchema.check?.[entryKey];
+			entry = getOwnSchemaEntry(cgSchema.check, entryKey);
 			break;
 		case 'definition':
-			entry = cgSchema.definition?.[entryKey];
+			entry = getOwnSchemaEntry(cgSchema.definition, entryKey);
 			break;
 	}
 
 	// Fallback to definition if not found
 	if (!entry && entryType !== 'definition') {
-		entry = cgSchema.definition?.[entryKey];
+		entry = getOwnSchemaEntry(cgSchema.definition, entryKey);
 	}
 
 	if (!entry) {
@@ -1150,14 +903,13 @@ export function convertFullSchema(
 
 	const options: SchemaConverterOptions = {
 		rootSchema: cgSchema,
-		defCache,
 		processing,
 	};
 
 	const { schema, uiSchema } = convertSchemaEntry(entry, options);
 
 	// Add all definitions to the schema
-	schema.definitions = {};
+	schema.definitions = createSafeRecord<RJSFSchema>();
 	if (cgSchema.definition) {
 		for (const [defKey, defEntry] of Object.entries(cgSchema.definition)) {
 			const { schema: defSchema } = convertSchemaEntry(defEntry, options);
@@ -1173,7 +925,7 @@ export function convertFullSchema(
 export function createFallbackSchema(data: Record<string, any>): ConvertedSchema {
 	const schema: RJSFSchema = {
 		type: 'object',
-		properties: {},
+		properties: createSafeRecord<RJSFSchema>(),
 	};
 	const uiSchema: UiSchema = {};
 

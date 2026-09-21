@@ -229,7 +229,7 @@ export type LANG_KEY = keyof typeof LANG;
 export type LANG_VALUE = typeof LANG[LANG_KEY];
 export type LANG_CODE = LANG_VALUE['code'];
 
-const langCodeMap = {} as Record<LANG_CODE, LANG_VALUE>;
+const langCodeMap = Object.create(null) as Record<LANG_CODE, LANG_VALUE>;
 for (const key in LANG) {
     const lang = LANG[key as LANG_KEY];
     langCodeMap[lang.code] = lang;
@@ -239,12 +239,20 @@ export function getByCode(langCode: LANG_CODE): Language {
     return langCodeMap[langCode];
 }
 
+export function normalizeLanguageTag(value: string): string {
+    return value.replaceAll('_', '-').toLowerCase();
+}
+
+export function getPrimaryLanguageTag(value: string): string {
+    return normalizeLanguageTag(value).split('-')[0];
+}
+
 export function isLikeLanguage(a: string, b: string) {
-    return a.replaceAll('_', '-').toLowerCase() === b.replaceAll('_', '-').toLowerCase();
+    return normalizeLanguageTag(a) === normalizeLanguageTag(b);
 }
 
 export function isSimilarLanguage(a: string, b: string) {
-    return a.replaceAll('_', '-').split('-')[0].toLowerCase() === b.replaceAll('_', '-').split('-')[0].toLowerCase();
+    return getPrimaryLanguageTag(a) === getPrimaryLanguageTag(b);
 }
 
 function setLangFallback(lang: Language, fallback: Language[]) {

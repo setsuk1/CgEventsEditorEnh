@@ -5,6 +5,16 @@ interface DedupedEntry {
 	firstIndex: number;
 }
 
+const UNSAFE_SCHEMA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function isSafeSchemaKey(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0 && !UNSAFE_SCHEMA_KEYS.has(value);
+}
+
+function getPropertyIdentity(prop: ICgEventsSchemaProperty): string {
+	return JSON.stringify([prop.parent || '', prop.key]);
+}
+
 function applyPropertyOrder(entries: DedupedEntry[]): ICgEventsSchemaProperty[] {
 	if (entries.length <= 1) {
 		return entries.map((item) => item.prop);
@@ -48,18 +58,19 @@ function applyPropertyOrder(entries: DedupedEntry[]): ICgEventsSchemaProperty[] 
 }
 
 export function dedupeSchemaProperties(props: ICgEventsSchemaProperty[]): ICgEventsSchemaProperty[] {
-	const orderedKeys: string[] = [];
-	const latestByKey = new Map<string, { prop: ICgEventsSchemaProperty; firstIndex: number }>();
+	const orderedIds: string[] = [];
+	const latestByIdentity = new Map<string, { prop: ICgEventsSchemaProperty; firstIndex: number }>();
 
 	for (let i = 0; i < props.length; i++) {
 		const prop = props[i];
-		if (!prop || !prop.key) {
+		if (!prop || !isSafeSchemaKey(prop.key) || (prop.parent && !isSafeSchemaKey(prop.parent))) {
 			continue;
 		}
-		const existing = latestByKey.get(prop.key);
+		const identity = getPropertyIdentity(prop);
+		const existing = latestByIdentity.get(identity);
 		if (!existing) {
-			orderedKeys.push(prop.key);
-			latestByKey.set(prop.key, { prop, firstIndex: i });
+			orderedIds.push(identity);
+			latestByIdentity.set(identity, { prop, firstIndex: i });
 		} else {
 			existing.prop = prop;
 		}
@@ -69,8 +80,8 @@ export function dedupeSchemaProperties(props: ICgEventsSchemaProperty[]): ICgEve
 	const childGroups = new Map<string, DedupedEntry[]>();
 	const childGroupOrder: string[] = [];
 
-	for (const key of orderedKeys) {
-		const entry = latestByKey.get(key);
+	for (const identity of orderedIds) {
+		const entry = latestByIdentity.get(identity);
 		if (!entry) {
 			continue;
 		}

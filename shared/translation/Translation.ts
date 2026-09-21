@@ -4,7 +4,7 @@
 
 import { LANG, Language } from '../locales/language';
 
-let translationMap: { [key: string]: Translation } = {};
+let translationMap: { [key: string]: Translation } = Object.create(null);
 let paramOpen: string = '{{';
 let paramClose: string = '}}';
 let selectedTranslation: Translation;
@@ -12,7 +12,7 @@ let fallbackTranslation: Translation;
 
 export class Translation {
 
-	private items: { [key: string]: string } = {};
+	private items: { [key: string]: string } = Object.create(null);
 
 	constructor(private _lang: Language) {
 
@@ -44,45 +44,54 @@ export class Translation {
 	}
 
 	importJson(json: any, prefix: string = ''): void {
-		for (let key in json) {
-			let value = json[key];
+		if (!json || typeof json !== 'object') return;
+		for (const key of Object.keys(json)) {
+			const value = json[key];
 			if (typeof value === 'string') {
 				this.addItem(prefix + key, value);
-			} else {
+			} else if (value && typeof value === 'object') {
 				this.importJson(value, prefix + key + '.');
 			}
 		}
 	}
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function replaceStringWithParams(str: string, params: { [key: string]: any }, prefix: string = ''): string {
-	for (let search in params) {
-		let value = params[search];
+	for (const search of Object.keys(params)) {
+		const value = params[search];
+		if (value === null) {
+			continue;
+		}
 		if (typeof value === 'object') {
-			str = replaceStringWithParams(str, value, search + '.');
+			str = replaceStringWithParams(str, value, prefix + search + '.');
 		} else {
-			str = str.replace(new RegExp(paramOpen + "\\s*" + prefix + search + "\\s*" + paramClose, "g"), value);
+			const pattern = escapeRegExp(paramOpen) + "\\s*" + escapeRegExp(prefix + search) + "\\s*" + escapeRegExp(paramClose);
+			str = str.replace(new RegExp(pattern, "g"), () => String(value));
 		}
 	}
 	return str;
 }
 
 
-const listenders: Array<(lang: Language) => any> = [];
+const languageListeners: Array<(lang: Language) => any> = [];
 
 export function onLanguageChange(listener: (lang: Language) => any) {
-	if (listenders.indexOf(listener) !== -1) {
+	if (languageListeners.indexOf(listener) !== -1) {
 		return false;
 	}
-	listenders.push(listener);
+	languageListeners.push(listener);
 	return true;
 }
 export function offLanguageChange(listener: (lang: Language) => any) {
-	const index = listenders.indexOf(listener);
+	const index = languageListeners.indexOf(listener);
 	if (index === -1) {
 		return false;
 	}
-	listenders.splice(index, 1);
+	languageListeners.splice(index, 1);
 	return true;
 }
 
@@ -100,7 +109,9 @@ export function setLanguage(lang: Language, fallback?: Language): Translation {
 	if (fallback) {
 		fallbackTranslation = getTranslation(fallback);
 	}
-	listenders.forEach(listener => listener(selectedTranslation.language));
+	for (const listener of [...languageListeners]) {
+		listener(selectedTranslation.language);
+	}
 	return selectedTranslation;
 }
 
@@ -137,7 +148,7 @@ export function translate(key: string, params?: { [key: string]: any }): string 
 	return key;
 }
 
-export function translateSchema<T extends string | string[] = string>(schema: Record<string, T>): T {
+export function translateSchema<T extends string | string[] = string>(schema: Record<string, T> | null | undefined): T | undefined {
 	if (!schema) {
 		return undefined;
 	}
@@ -165,12 +176,8 @@ export function translateSchema<T extends string | string[] = string>(schema: Re
 
 setLanguage(LANG.EN, LANG.EN);
 
-export type Primitive = string | number | boolean | bigint | symbol | null | undefined;
-
-export type IsObject<T> = T extends Primitive ? false : true;
-
-export type ILanguageJson<T extends Object = Object> = {
-	[P in keyof T]: IsObject<T[P]> extends true ? ILanguageJson<T[P]> : string;
+export type ILanguageJson<T extends object = object> = {
+	[P in keyof T]: T[P] extends object ? ILanguageJson<T[P]> : string;
 }
 
 export interface TranslationPath<T extends string, K extends string> {
@@ -188,18 +195,18 @@ export interface TranslationItem<T extends string, K extends string> {
 	toString(params?: Record<string, any>): string;
 }
 
-export type ITranslationStructureValue<T extends Object, P extends keyof T, K extends string> = P extends string ? IsObject<T[P]> extends true ? ITranslationStructure<T[P], `${K}${P}.`> & TranslationPath<K, P> : TranslationItem<K, P> : never;
+export type ITranslationStructureValue<T extends object, P extends keyof T, K extends string> = P extends string ? T[P] extends object ? ITranslationStructure<T[P], `${K}${P}.`> & TranslationPath<K, P> : TranslationItem<K, P> : never;
 
-export type ITranslationStructure<T extends Object, K extends string> = {
+export type ITranslationStructure<T extends object, K extends string> = {
 	[P in keyof T]: ITranslationStructureValue<T, P, K>;
 };
 
-export function generateTranslation<T extends Object, K extends string>(json: T, prefix: K = '' as K): ITranslationStructure<T, K> {
-	const result = {} as ITranslationStructure<T, K>;
+export function generateTranslation<T extends object, K extends string>(json: T, prefix: K = '' as K): ITranslationStructure<T, K> {
+	const result = Object.create(null) as ITranslationStructure<T, K>;
 
-	for (const key in json) {
+	for (const key of Object.keys(json) as Array<keyof T & string>) {
 		const value = json[key];
-		const obj = {} as ITranslationStructureValue<T, typeof key, K>;
+		const obj = Object.create(null) as ITranslationStructureValue<T, typeof key, K>;
 		const props = {
 			getPrefix() {
 				return prefix;

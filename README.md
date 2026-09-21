@@ -33,6 +33,10 @@
 
 - VS Code `^1.106.0`
 
+## Documentation
+
+維護與架構文件從 [docs/README.md](docs/README.md) 開始。重要的工程規範記錄在 [AGENTS.md](AGENTS.md)，目前專案狀態則在 [docs/current-status.md](docs/current-status.md)。
+
 ## 開發
 
 ```bash

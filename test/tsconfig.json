@@ -1,0 +1,33 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "CommonJS",
+		"moduleResolution": "Node",
+		"baseUrl": "..",
+		"paths": {
+			"@shared": [
+				"shared/index.ts"
+			],
+			"mathjs/number": [
+				"node_modules/mathjs/types/index.d.ts"
+			]
+		},
+		"lib": [
+			"DOM",
+			"ES2022"
+		],
+		"outDir": "../out/test",
+		"rootDir": "..",
+		"strict": true,
+		"strictNullChecks": false,
+		"esModuleInterop": true,
+		"types": [
+			"node"
+		]
+	},
+	"include": [
+		"./**/*.ts",
+		"../webview/utils/EventEmitter.ts",
+		"../webview/msg/WindowEventEmitter.ts"
+	]
+}

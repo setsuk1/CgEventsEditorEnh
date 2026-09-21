@@ -3,14 +3,18 @@ import {
 	ariaDescribedByIds,
 	enumOptionsIndexForValue,
 	enumOptionsValueForIndex,
-	type EnumOptionsType,
 	type FormContextType,
 	type RJSFSchema,
 	type StrictRJSFSchema,
 	type WidgetProps,
 } from '@rjsf/utils';
-import { isRecord } from '../utils/rjsfUtils';
+import {
+	hasStaticSelectOptions,
+	resolveInitialSelectValue,
+	resolveSelectEnumOptions,
+} from './SelectWidgetData';
 import { buildWidgetSuggestionContext } from './suggestionUtils';
+import { commitRjsfWidgetValue, getRjsfImmediateCommitRequest } from './RJSFImmediateCommit';
 
 type SelectWidgetProps<T, S extends StrictRJSFSchema, F extends FormContextType> = WidgetProps<T, S, F>;
 
@@ -18,9 +22,8 @@ function getValue(event: React.SyntheticEvent<HTMLSelectElement>, multiple: bool
 	const select = event.currentTarget;
 	if (multiple) {
 		return Array.from(select.options)
-			.slice()
-			.filter((o) => o.selected)
-			.map((o) => o.value);
+			.filter((option) => option.selected)
+			.map((option) => option.value);
 	}
 	return select.value;
 }
@@ -39,102 +42,53 @@ export class SelectWidget<T = any, S extends StrictRJSFSchema = RJSFSchema, F ex
 
 	private getFixedEnumOptions() {
 		const { schema, options, registry } = this.props;
-		const { enumOptions, enumNames } = options;
-		if (Array.isArray(enumOptions)) {
-			return enumOptions;
-		}
-		if (Array.isArray(schema.enum)) {
-			const schemaEnumNames = Array.isArray(schema.enumNames) ? schema.enumNames : undefined;
-			const names = Array.isArray(enumNames) ? enumNames : schemaEnumNames;
-			const mapped: EnumOptionsType<S>[] = schema.enum.map((enumValue, index) => ({
-				value: enumValue,
-				label: names?.[index] ?? String(enumValue),
-			}));
-			return mapped;
-		}
-		const { suggestions } = buildWidgetSuggestionContext(options, registry?.formContext);
-		if (suggestions.length) {
-			return suggestions.map((entry) => ({ value: entry.value, label: entry.label }));
-		}
-		return enumOptions;
+		const suggestions = hasStaticSelectOptions(schema, options)
+			? []
+			: buildWidgetSuggestionContext(options, registry?.formContext).suggestions;
+		return resolveSelectEnumOptions<S>(schema, options, suggestions);
 	}
 
 	private applyInitialDefaultValue() {
-		if (this.hasUserChanged) {
-			return;
+		const { schema, options, value, multiple = false, onChange } = this.props;
+		const decision = resolveInitialSelectValue<S>({
+			hasUserChanged: this.hasUserChanged,
+			disabled: Boolean(this.props.disabled),
+			readonly: Boolean(this.props.readonly),
+			multiple,
+			schemaDefault: schema.default,
+			currentValue: value,
+			enumOptions: this.getFixedEnumOptions(),
+			enumDisabled: Array.isArray(options.enumDisabled) ? options.enumDisabled : undefined,
+		});
+		if (decision.shouldApply) {
+			onChange(decision.value);
 		}
-		const { id, schema, options, value, registry, multiple = false } = this.props;
-		if (!id || multiple) {
-			return;
-		}
-		if (schema.default !== undefined) {
-			return;
-		}
-
-		const fixedEnumOptions = this.getFixedEnumOptions();
-		if (!Array.isArray(fixedEnumOptions) || fixedEnumOptions.length === 0) {
-			return;
-		}
-
-		const selectedIndex = enumOptionsIndexForValue<S>(value, fixedEnumOptions, false);
-		if (typeof selectedIndex !== 'undefined') {
-			return;
-		}
-
-		const enumDisabled = Array.isArray(options.enumDisabled) ? options.enumDisabled : undefined;
-		let resolvedValue: unknown = undefined;
-		for (const option of fixedEnumOptions) {
-			const optionValue = option.value;
-			if (!enumDisabled || enumDisabled.indexOf(optionValue) === -1) {
-				resolvedValue = optionValue;
-				break;
-			}
-		}
-		if (resolvedValue === undefined) {
-			return;
-		}
-
-		const formContext = registry?.formContext;
-		if (!isRecord(formContext) || typeof formContext.updateFormData !== 'function') {
-			return;
-		}
-		const pathStr = id.replace(/^root_?/, '');
-		const path = pathStr ? pathStr.split('_').filter(Boolean) : [];
-		formContext.updateFormData(path, resolvedValue, 'init');
 	}
 
 	private handleFocus = (event: React.FocusEvent<HTMLSelectElement>) => {
 		const { id, onFocus, options, multiple = false } = this.props;
 		const fixedEnumOptions = this.getFixedEnumOptions();
-		const optEmptyVal = options.emptyValue;
 		const newValue = getValue(event, multiple);
-		onFocus(id, enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, optEmptyVal));
+		onFocus(id, enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, options.emptyValue));
 	};
 
 	private handleBlur = (event: React.FocusEvent<HTMLSelectElement>) => {
 		const { id, onBlur, options, multiple = false } = this.props;
 		const fixedEnumOptions = this.getFixedEnumOptions();
-		const optEmptyVal = options.emptyValue;
 		const newValue = getValue(event, multiple);
-		onBlur(id, enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, optEmptyVal));
+		onBlur(id, enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, options.emptyValue));
 	};
 
 	private handleChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
 		this.hasUserChanged = true;
-		const { id, onChange, options, registry, multiple = false } = this.props;
+		const { onChange, options, multiple = false, formContext, registry } = this.props;
 		const fixedEnumOptions = this.getFixedEnumOptions();
-		const optEmptyVal = options.emptyValue;
 		const newValue = getValue(event, multiple);
-		const resolved = enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, optEmptyVal);
-		onChange(resolved);
-
-		const formContext = registry?.formContext;
-		if (!id || !isRecord(formContext) || typeof formContext.updateFormData !== 'function') {
-			return;
-		}
-		const pathStr = id.replace(/^root_?/, '');
-		const path = pathStr ? pathStr.split('_').filter(Boolean) : [];
-		formContext.updateFormData(path, resolved, true);
+		commitRjsfWidgetValue(
+			enumOptionsValueForIndex<S>(newValue, fixedEnumOptions, options.emptyValue),
+			onChange,
+			getRjsfImmediateCommitRequest(formContext || registry?.formContext),
+		);
 	};
 
 	render() {
@@ -152,10 +106,11 @@ export class SelectWidget<T = any, S extends StrictRJSFSchema = RJSFSchema, F ex
 			htmlName,
 		} = this.props;
 		const { enumDisabled } = options;
-		const emptyValue = multiple ? [] : '';
+		const emptyValue: string | string[] = multiple ? [] : '';
 		const fixedEnumOptions = this.getFixedEnumOptions();
 		const selectedIndexes = enumOptionsIndexForValue<S>(value, fixedEnumOptions, multiple);
-		const showPlaceholderOption = !multiple && schema.default === undefined;
+		const hasUnknownValue = !multiple && selectedIndexes === undefined && value !== undefined && value !== null && value !== '';
+		const showPlaceholderOption = !multiple && schema.default === undefined && !hasUnknownValue;
 
 		return (
 			<select
@@ -164,7 +119,7 @@ export class SelectWidget<T = any, S extends StrictRJSFSchema = RJSFSchema, F ex
 				multiple={multiple}
 				role="combobox"
 				className="form-select form-select-sm"
-				value={typeof selectedIndexes === 'undefined' ? emptyValue : selectedIndexes}
+				value={selectedIndexes === undefined ? emptyValue : selectedIndexes}
 				required={required}
 				disabled={disabled || readonly}
 				autoFocus={autofocus}
@@ -173,6 +128,7 @@ export class SelectWidget<T = any, S extends StrictRJSFSchema = RJSFSchema, F ex
 				onChange={this.handleChange}
 				aria-describedby={ariaDescribedByIds(id)}
 			>
+				{hasUnknownValue && <option value="" disabled>{String(value)}</option>}
 				{showPlaceholderOption && <option value="">{placeholder}</option>}
 				{Array.isArray(fixedEnumOptions) &&
 					fixedEnumOptions.map(({ value: optionValue, label }, i) => {

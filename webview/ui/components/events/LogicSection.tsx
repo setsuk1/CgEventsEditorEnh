@@ -8,7 +8,8 @@ import { SvgChevronDown } from '../../svg/SvgChevronDown';
 import { SvgChevronRight } from '../../svg/SvgChevronRight';
 import { SvgPlusStroke } from '../../svg/SvgPlusStroke';
 import { ContextMenuPortal } from './ContextMenuPortal';
-import { contextMenuStateManager } from './ContextMenuState';
+import { contextMenuStateManager, createLogicContextMenuId } from './ContextMenuState';
+import { resolveLogicListShortcut } from './LogicItemsListShortcuts';
 
 interface LogicSectionProps {
 	title: string;
@@ -83,7 +84,7 @@ export class LogicSection extends React.PureComponent<LogicSectionProps, LogicSe
 	};
 
 	private getMenuId() {
-		return `${this.props.eventId ?? 'event'}-${this.props.blockType}-section`;
+		return createLogicContextMenuId('section-header', this.props.eventId ?? 'event', this.props.blockType);
 	}
 
 	private handleContextMenuStateChange = () => {
@@ -94,83 +95,76 @@ export class LogicSection extends React.PureComponent<LogicSectionProps, LogicSe
 	};
 
 	private handleKeyDown = (event: KeyboardEvent) => {
-		if (!this.state.contextMenu) return;
-		if (event.repeat) return;
-		if (event.key === 'Escape') {
+		if (!this.state.contextMenu || event.isComposing) return;
+		const shortcut = resolveLogicListShortcut({
+			key: event.key,
+			repeat: event.repeat,
+			ctrlKey: event.ctrlKey,
+			metaKey: event.metaKey,
+			altKey: event.altKey,
+			shiftKey: event.shiftKey,
+			modalOpen: document.body.classList.contains('cgenh-has-modal-open'),
+			interactiveTarget: false,
+			contextMode: 'section',
+			hasActiveIndex: false,
+		});
+		if (!shortcut) return;
+		if (shortcut.consume || shortcut.action === 'escape') {
 			event.preventDefault();
-
 			event.stopPropagation();
-			this.closeContextMenu();
-			return;
 		}
-		const key = event.key.toLowerCase();
-		if ((event.ctrlKey || event.metaKey) && ['c', 'x', 'v'].includes(key)) {
-			event.preventDefault();
 
-			event.stopPropagation();
-			if (key === 'c') {
+		switch (shortcut.action) {
+			case 'escape':
+				this.closeContextMenu();
+				return;
+			case 'section-copy':
 				this.runMenuAction(this.props.onCopyList);
-			} else if (key === 'x') {
+				return;
+			case 'section-cut':
 				this.runMenuAction(this.props.onCutList);
-			} else {
+				return;
+			case 'section-paste':
 				this.runMenuAction(this.props.onPasteList);
-			}
-			return;
-		}
-		if (event.ctrlKey || event.metaKey) {
-			return;
-		}
-		if (key === 'a') {
-			event.preventDefault();
-
-			event.stopPropagation();
-			this.runMenuAction(this.props.onToggleDisableList);
-			return;
-		}
-		if (key === 'r') {
-			event.preventDefault();
-
-			event.stopPropagation();
-			this.runMenuAction(this.props.onRemoveList);
-			return;
-		}
-		if (key === 'c') {
-			event.preventDefault();
-
-			event.stopPropagation();
-			this.toggleSectionCollapsed();
-		}
-		if (key === 'n') {
-			event.preventDefault();
-
-			event.stopPropagation();
-			this.handleAdd();
+				return;
+			case 'section-toggle':
+				this.toggleSectionCollapsed();
+				return;
+			case 'section-add':
+				this.handleAdd();
+				return;
+			case 'section-toggle-disabled':
+				this.runMenuAction(this.props.onToggleDisableList);
+				return;
+			case 'section-remove':
+				this.runMenuAction(this.props.onRemoveList);
+				return;
 		}
 	};
 
 	componentDidUpdate(_: LogicSectionProps, prevState: LogicSectionState): void {
 		if (!prevState.contextMenu && this.state.contextMenu) {
 			if (!this.keydownAttached) {
-				winEE.on('keydown', this.handleKeyDown, this);
+				winEE.on('keydown', this.handleKeyDown);
 				this.keydownAttached = true;
 			}
 		}
 		if (prevState.contextMenu && !this.state.contextMenu) {
 			if (this.keydownAttached) {
-				winEE.off('keydown', this.handleKeyDown, this);
+				winEE.off('keydown', this.handleKeyDown);
 				this.keydownAttached = false;
 			}
 		}
 	}
 
 	componentDidMount(): void {
-		contextMenuStateManager.on('change', this.handleContextMenuStateChange, this);
+		contextMenuStateManager.on('change', this.handleContextMenuStateChange);
 	}
 
 	componentWillUnmount(): void {
-		contextMenuStateManager.off('change', this.handleContextMenuStateChange, this);
+		contextMenuStateManager.off('change', this.handleContextMenuStateChange);
 		if (this.keydownAttached) {
-			winEE.off('keydown', this.handleKeyDown, this);
+			winEE.off('keydown', this.handleKeyDown);
 			this.keydownAttached = false;
 		}
 	}
@@ -274,7 +268,7 @@ export class LogicSection extends React.PureComponent<LogicSectionProps, LogicSe
 						<button
 							type="button"
 							className="btn btn-sm btn-outline-secondary"
-							onClick={() => onToggle(blockType)}
+							onClick={this.toggleSectionCollapsed}
 							title={toggleTitle}
 							onMouseEnter={playMouseHoverAudio} onMouseDown={playMouseDownAudio}
 						>

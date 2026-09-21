@@ -9,59 +9,58 @@ import { HelperWidget } from '../widgets/HelperWidget';
  * This is needed for object types where ui:widget is ignored but ui:field works.
  */
 export class HelperField extends React.PureComponent<FieldProps> {
-	private handleChange = (value: any) => {
-		const { fieldPathId, onChange } = this.props;
-		const fieldId = this.getFieldId();
-		onChange(value, fieldPathId.path, undefined, fieldId);
-	};
+	private mounted = false;
 
-	private getFieldId(): string {
-		const { fieldPathId, name } = this.props;
-		return fieldPathId?.$id || name || 'helper-field';
+	componentDidMount(): void {
+		this.mounted = true;
 	}
 
-	render() {
-		const { schema, uiSchema, formData, disabled, readonly, required } = this.props;
+	componentWillUnmount(): void {
+		this.mounted = false;
+	}
 
-		// Extract options from uiSchema
+	private handleChange = (value: any) => {
+		const { fieldPathId, onChange } = this.props;
+		onChange(value, fieldPathId.path, undefined, fieldPathId.$id);
+	};
+
+	private handleBlur = (id: string, value: any) => {
+		if (this.mounted) this.props.onBlur(id, value);
+	};
+
+	render() {
+		const { schema, uiSchema, formData, disabled, readonly, required, fieldPathId, name } = this.props;
 		const rawOptions = uiSchema?.['ui:options'];
 		const options = isRecord(rawOptions) ? rawOptions : {};
-
-		// Safe ID extraction
-		const fieldId = this.getFieldId();
-
-		// Get label and description
+		const fieldId = fieldPathId.$id || name || 'helper-field';
 		const label = schema?.title || '';
 		const description = typeof schema?.description === 'string' ? schema.description : undefined;
-
-		// Get column class from ui:options
 		const colClass = typeof options.colClass === 'string' ? options.colClass : '';
 		const classNames = stripCgenhClasses(
 			typeof uiSchema?.['ui:classNames'] === 'string' ? uiSchema['ui:classNames'] : undefined
 		);
 
-		// Adapt FieldProps to WidgetProps format for HelperWidget
-		// For object types, tell the widget it's NOT a string target so it doesn't stringify
 		const widgetProps: WidgetProps = {
 			id: fieldId,
+			name,
+			htmlName: fieldPathId.name,
 			value: formData,
-			disabled: disabled || false,
-			readonly: readonly || false,
+			disabled: !!disabled,
+			readonly: !!readonly,
 			onChange: this.handleChange,
 			options,
 			schema: {
 				...schema,
-				// Keep type as object so HelperWidget knows not to stringify
 				type: 'object',
 			},
 			label,
-			required: required || false,
+			required: !!required,
 			autofocus: false,
 			placeholder: '',
 			rawErrors: [],
 			registry: this.props.registry,
 			formContext: this.props.formContext,
-			onBlur: this.props.onBlur,
+			onBlur: this.handleBlur,
 			onFocus: this.props.onFocus,
 		};
 

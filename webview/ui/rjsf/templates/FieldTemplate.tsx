@@ -1,17 +1,28 @@
-import { FieldTemplateProps } from '@rjsf/utils';
+import { DescriptionFieldProps, FieldTemplateProps } from '@rjsf/utils';
 import React from 'react';
 import { InfoTooltip } from '../../components/common/InfoTooltip';
-import { getIndentClass } from '../../helpers/indentHelper';
 import { isRecord, stripCgenhClasses } from '../utils/rjsfUtils';
 import { evaluateVisibleOption } from '../utils/visibleOption';
+
+function getIndentClass(rawIndent: unknown): string | undefined {
+	const indent = typeof rawIndent === 'number' ? rawIndent : Number(rawIndent);
+	if (!Number.isFinite(indent) || indent <= 0) return undefined;
+	const clamped = Math.min(Math.max(Math.floor(indent), 1), 5);
+	return `cgenh-config-field--indent-${clamped}`;
+}
 
 /**
  * Custom field template for RJSF using Bootstrap grid
  */
-export class FieldTemplate extends React.PureComponent<FieldTemplateProps> {
+type FieldTemplatePropsWithPath = FieldTemplateProps & {
+	fieldPathId?: { path?: Array<string | number> };
+};
+
+export class FieldTemplate extends React.PureComponent<FieldTemplatePropsWithPath> {
 	render() {
 		const {
 			id,
+			fieldPathId,
 			label,
 			children,
 			errors,
@@ -29,24 +40,18 @@ export class FieldTemplate extends React.PureComponent<FieldTemplateProps> {
 		const rawOptions = uiSchema?.['ui:options'];
 		const uiOptions = isRecord(rawOptions) ? rawOptions : undefined;
 		const visibleOpt = uiOptions ? uiOptions.visible : undefined;
-
-		// Get the current field's parent path from id for resolving sibling references
-		// id format: "root_parent_child" -> convert to "parent.child"
-		const currentPath = (id || '').replace(/^root_?/, '').replace(/_/g, '.');
-		const parentPath = currentPath.split('.').slice(0, -1).join('.');
-
+		const parentPath = Array.isArray(fieldPathId?.path) ? fieldPathId.path.slice(0, -1) : [];
 		const isVisible = evaluateVisibleOption(visibleOpt, rootFormData, parentPath);
 
-		if (hidden || !isVisible) {
+		if (!isVisible) {
+			return null;
+		}
+		if (hidden) {
 			return <div className="d-none">{children}</div>;
 		}
 
-		// Check if this is a boolean checkbox type
 		const isCheckbox = schema.type === 'boolean' && uiSchema?.['ui:widget'] !== 'select';
-
-		// Get raw description string from schema (RJSF's description prop is a ReactElement)
 		const rawDescription = typeof schema.description === 'string' ? schema.description : undefined;
-
 		const colClass = uiOptions && typeof uiOptions.colClass === 'string' ? uiOptions.colClass : '';
 		const indentClass = getIndentClass(uiOptions ? uiOptions.indent : undefined);
 		const fieldClasses = [
@@ -56,12 +61,8 @@ export class FieldTemplate extends React.PureComponent<FieldTemplateProps> {
 			stripCgenhClasses(classNames),
 			stripCgenhClasses(uiOptions && typeof uiOptions.classNames === 'string' ? uiOptions.classNames : undefined),
 		].filter(Boolean).join(' ');
-
-		// Get unit from ui:options
 		const unit = uiOptions && typeof uiOptions.unit === 'string' ? uiOptions.unit : undefined;
 
-		// For checkboxes, RJSF's widget already renders the label inside the checkbox
-		// We only add the InfoTooltip for the description
 		if (isCheckbox) {
 			return (
 				<div className={fieldClasses}>
@@ -75,7 +76,6 @@ export class FieldTemplate extends React.PureComponent<FieldTemplateProps> {
 			);
 		}
 
-		// Wrap children with input-group if unit is present
 		const fieldContent = unit ? (
 			<div className="input-group input-group-sm">
 				{children}
@@ -99,5 +99,12 @@ export class FieldTemplate extends React.PureComponent<FieldTemplateProps> {
 				{help && <div className="form-text">{help}</div>}
 			</div>
 		);
+	}
+}
+
+
+export class DescriptionFieldTemplate extends React.PureComponent<DescriptionFieldProps> {
+	render(): null {
+		return null;
 	}
 }
